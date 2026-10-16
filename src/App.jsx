@@ -5,7 +5,7 @@ import {
   TrendingUp, TrendingDown, Clock, Minus, LogOut, Settings, RotateCcw, Scale,
   Pencil, ArrowRightLeft, Coins, BookOpen,
   Home, Trophy, Activity, Play, Trash2,
-  User, Check, Archive
+  User, Check, Archive, Menu
 } from 'lucide-react';
 // --- Helper Functions ---
 const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -207,7 +207,7 @@ const ChartGrid = ({ min, max, y, axisFmt }) => {
   );
 };
 
-const LineChart = ({ data, color = '#818cf8', axisFmt = shortMoney, valueFmt = formatSigned }) => {
+const LineChart = ({ data, color = '#ffd24a', axisFmt = shortMoney, valueFmt = formatSigned }) => {
   if (!data.length) return null;
   const vals = data.map(d => d.value);
   let min = Math.min(0, ...vals), max = Math.max(0, ...vals);
@@ -233,7 +233,7 @@ const LineChart = ({ data, color = '#818cf8', axisFmt = shortMoney, valueFmt = f
   );
 };
 
-const BarChart = ({ data, colors = ['#818cf8'], signColors = false, axisFmt = shortMoney, valueFmt = formatCurrency, legend }) => {
+const BarChart = ({ data, colors = ['#ffd24a'], signColors = false, axisFmt = shortMoney, valueFmt = formatCurrency, legend }) => {
   if (!data.length) return null;
   const all = data.flatMap(d => d.values);
   let min = Math.min(0, ...all), max = Math.max(0, ...all);
@@ -289,10 +289,10 @@ const ChartCard = ({ title, subtitle, children }) => (
 );
 
 const StatTile = ({ label, value, sub, tone }) => (
-  <div className="bg-slate-900/50 border border-slate-700 rounded-xl p-4">
-    <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">{label}</div>
-    <div className={`text-xl font-bold ${tone === 'pos' ? 'text-emerald-400' : tone === 'neg' ? 'text-rose-400' : 'text-white'}`}>{value}</div>
-    {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
+  <div className="stat-tile bg-slate-800 rounded-3xl p-4 text-[#1a1b24]">
+    <div className="text-[11px] font-bold uppercase tracking-wide text-[#1a1b24]/60 mb-1">{label}</div>
+    <div className={`text-2xl font-black ${tone === 'pos' ? 'text-[#0b4a22]' : tone === 'neg' ? 'text-[#7a1212]' : 'text-[#1a1b24]'}`}>{value}</div>
+    {sub && <div className="text-xs font-medium text-[#1a1b24]/70 mt-1">{sub}</div>}
   </div>
 );
 
@@ -302,6 +302,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(restored ? 'session' : 'home');
   const [sessionStartedAt, setSessionStartedAt] = useState(restored ? restored.startedAt : null);
   const [confirmModal, setConfirmModal] = useState(null);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [detailsBackTab, setDetailsBackTab] = useState('history');
   const isSessionActive = !!sessionStartedAt;
   const [gamesHistory, setGamesHistory] = useState([]);
@@ -764,72 +765,78 @@ export default function App() {
     const cashedOutPlayers = sessionPlayers.filter(p => p.cashedOut);
 
     return (
-    <div className="space-y-6 max-w-6xl mx-auto animation-fade-in">
+    <div className="space-y-4 max-w-xl mx-auto animation-fade-in">
       <div className="flex items-center text-emerald-400 font-semibold text-sm"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2" /> Live session · started {formatTime(sessionStartedAt)}</div>
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-lg flex flex-wrap gap-6 items-center">
-        <div className="flex items-center text-slate-300 font-semibold mr-4">
-          <Settings size={20} className="mr-2 text-indigo-400"/> Game Settings
+      <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700 shadow-lg">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center text-slate-300 font-semibold">
+            <Settings size={18} className="mr-2 text-indigo-400"/> Game Settings
+          </div>
+          <button 
+            onClick={() => setNewGameModal({ isOpen: true, selectedPlayerIds: roster.map(p => p.id) })}
+            className="bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 border border-rose-500/30 px-3 py-2 rounded-lg text-xs font-medium flex items-center transition-colors"
+          >
+            <Trash2 size={14} className="mr-1.5" /> Clear Table
+          </button>
         </div>
-        <div className="flex items-center gap-3">
-          <label className="text-sm text-slate-400">Buy-in Value ($):</label>
-          <input 
-            type="number" 
-            min="0"
-            className="w-24 bg-slate-900 border border-slate-600 rounded-lg py-1.5 px-3 text-white focus:outline-none focus:border-indigo-500"
-            value={buyInValue === 0 ? '' : buyInValue}
-            onChange={(e) => {
-              const newVal = Number(e.target.value) || 0;
-              setBuyInValue(newVal);
-              setSessionPlayers(players => players.map(p => ({ ...p, net: calculateNet(p, newVal) })));
-            }}
-          />
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="block text-xs text-slate-400 mb-1">Buy-in value ($)</span>
+            <input 
+              type="number" 
+              inputMode="decimal"
+              min="0"
+              className="w-full bg-slate-900 border border-slate-600 rounded-xl py-3 px-3 text-white focus:outline-none focus:border-indigo-500"
+              value={buyInValue === 0 ? '' : buyInValue}
+              onChange={(e) => {
+                const newVal = Number(e.target.value) || 0;
+                setBuyInValue(newVal);
+                setSessionPlayers(players => players.map(p => ({ ...p, net: calculateNet(p, newVal) })));
+              }}
+            />
+          </label>
+          <label className="block">
+            <span className="block text-xs text-slate-400 mb-1">Chips per $1</span>
+            <input 
+              type="number" 
+              inputMode="decimal"
+              min="1"
+              className="w-full bg-slate-900 border border-slate-600 rounded-xl py-3 px-3 text-white focus:outline-none focus:border-indigo-500"
+              value={chipRatio === '' ? '' : chipRatio}
+              onChange={(e) => {
+                const val = e.target.value;
+                const newRatio = val === '' ? '' : Number(val);
+                setChipRatio(newRatio);
+                if (newRatio) {
+                  setSessionPlayers(players => players.map(p => ({ ...p, net: calculateNet(p, buyInValue, newRatio) })));
+                }
+              }}
+            />
+          </label>
         </div>
-        <div className="flex items-center gap-3">
-          <label className="text-sm text-slate-400">Chip Ratio (Chips per $1):</label>
-          <input 
-            type="number" 
-            min="1"
-            className="w-24 bg-slate-900 border border-slate-600 rounded-lg py-1.5 px-3 text-white focus:outline-none focus:border-indigo-500"
-            value={chipRatio === '' ? '' : chipRatio}
-            onChange={(e) => {
-              const val = e.target.value;
-              const newRatio = val === '' ? '' : Number(val);
-              setChipRatio(newRatio);
-              if (newRatio) {
-                setSessionPlayers(players => players.map(p => ({ ...p, net: calculateNet(p, buyInValue, newRatio) })));
-              }
-            }}
-          />
-        </div>
-        <button 
-          onClick={() => setNewGameModal({ isOpen: true, selectedPlayerIds: roster.map(p => p.id) })}
-          className="ml-auto bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center transition-colors"
-        >
-          <Trash2 size={14} className="mr-1.5" /> Clear Table
-        </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-lg">
-          <div className="text-slate-400 text-sm font-medium mb-1 flex items-center"><DollarSign size={16} className="mr-1"/> Total Buy-ins</div>
-          <div className="text-3xl font-bold text-white">{formatCurrency(sessionStats.totalBuyIn)}</div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[#ffd24a] text-[#1a1b24] rounded-3xl p-4">
+          <div className="text-[#1a1b24]/70 text-xs font-bold uppercase tracking-wide mb-1 flex items-center"><DollarSign size={14} className="mr-0.5"/> Total buy-ins</div>
+          <div className="text-2xl font-black text-[#1a1b24]">{formatCurrency(sessionStats.totalBuyIn)}</div>
         </div>
-        <div className="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-lg">
-          <div className="text-slate-400 text-sm font-medium mb-1 flex items-center"><DollarSign size={16} className="mr-1"/> Total Cash-outs</div>
-          <div className="text-3xl font-bold text-white">{formatCurrency(sessionStats.totalCashOut)}</div>
+        <div className="bg-[#9ad9f7] text-[#0c2a3a] rounded-3xl p-4">
+          <div className="text-[#0c2a3a]/70 text-xs font-bold uppercase tracking-wide mb-1 flex items-center"><DollarSign size={14} className="mr-0.5"/> Total cash-outs</div>
+          <div className="text-2xl font-black text-[#0c2a3a]">{formatCurrency(sessionStats.totalCashOut)}</div>
         </div>
-        <div className={`rounded-xl p-5 border shadow-lg flex flex-col justify-center ${Math.abs(sessionStats.totalNet) < 0.01 ? 'bg-emerald-900/20 border-emerald-500/30' : 'bg-rose-900/20 border-rose-500/30'}`}>
+        <div className={`col-span-2 rounded-3xl p-4 flex flex-col justify-center ${Math.abs(sessionStats.totalNet) < 0.01 ? 'bg-[#86e39a] text-[#10331b]' : 'bg-[#ff9b45] text-[#3a1a06]'}`}>
           <div className="flex justify-between items-start">
             <div>
-              <div className="text-slate-400 text-sm font-medium mb-1">Difference / Mismatch</div>
-              <div className={`text-3xl font-bold ${Math.abs(sessionStats.totalNet) < 0.01 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <div className="text-xs font-bold uppercase tracking-wide mb-1 opacity-70">Difference / mismatch</div>
+              <div className={`text-2xl font-black ${Math.abs(sessionStats.totalNet) < 0.01 ? 'text-[#10331b]' : 'text-[#3a1a06]'}`}>
                 {formatCurrency(Math.abs(sessionStats.totalNet))}
               </div>
             </div>
             {Math.abs(sessionStats.totalNet) >= 0.01 && (
               <button 
                 onClick={handleNormalize}
-                className="bg-amber-600/20 hover:bg-amber-600/40 text-amber-400 border border-amber-500/30 px-3 py-2 rounded-lg text-xs font-medium flex items-center transition-colors"
+                className="bg-black/20 text-[#3a1a06] border border-black/20 px-3 py-2 rounded-xl text-xs font-bold flex items-center transition-colors"
               >
                 <Scale size={14} className="mr-1.5" /> Normalize
               </button>
@@ -838,8 +845,8 @@ export default function App() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
+      <div className="grid grid-cols-1 gap-4">
+        <div className="space-y-4">
           <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-lg overflow-hidden">
             <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
               <h2 className="text-lg font-semibold text-white flex items-center">
@@ -854,44 +861,33 @@ export default function App() {
               </button>
             </div>
             
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-900/50 text-slate-400 text-sm uppercase tracking-wider">
-                    <th className="p-4 font-medium">Player</th>
-                    <th className="p-4 font-medium">Buy-ins</th>
-                    <th className="p-4 font-medium text-center">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700/50">
-                  {activePlayers.length === 0 && (
-                    <tr><td colSpan="3" className="p-4 text-center text-slate-500">No active players.</td></tr>
-                  )}
-                  {activePlayers.map((player) => (
-                    <tr key={player.id} className="hover:bg-slate-700/20 transition-colors">
-                      <td className="p-4 font-medium text-slate-200">
-                        {player.name}
-                        {player.bankedCashOut > 0 && <span className="ml-2 text-xs text-indigo-400 bg-indigo-900/30 px-2 py-0.5 rounded border border-indigo-500/30">Rejoined</span>}
-                      </td>
-                      <td className="p-4 font-bold text-white flex items-center">
-                        <span className="text-xl mr-2">{player.buyInCount}</span> 
-                        <span className="text-slate-400 text-sm font-normal mr-2">({formatCurrency((player.buyInCount * buyInValue) + (player.customBuyInValue || 0))})</span>
-                        {(player.customBuyInValue !== 0) && <span className="text-xs text-amber-400 bg-amber-900/20 px-1.5 py-0.5 rounded">Custom</span>}
-                      </td>
-                      <td className="p-4">
-                        <div className="flex items-center justify-center gap-2">
-                          <button onClick={() => handleSubBuyIn(player.id)} className="p-1.5 bg-slate-700 hover:bg-slate-600 rounded text-slate-300 transition-colors"><Minus size={16}/></button>
-                          <button onClick={() => handleAddBuyIn(player.id)} className="p-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-white"><Plus size={16}/></button>
-                          <button onClick={() => setCustomBuyInModal({ isOpen: true, playerId: player.id, amount: '' })} className="p-1.5 bg-amber-600 hover:bg-amber-500 rounded text-white"><Coins size={16}/></button>
-                          <button onClick={() => openCashOutModal(player.id)} className="ml-4 px-3 py-1.5 bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/40 rounded flex items-center text-sm font-medium transition-colors">
-                            <LogOut size={14} className="mr-1.5" /> Cash Out
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="divide-y divide-slate-700/50">
+              {activePlayers.length === 0 && (
+                <div className="p-4 text-center text-slate-500">No active players.</div>
+              )}
+              {activePlayers.map((player) => (
+                <div key={player.id} className="p-4">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-slate-100 text-lg flex items-center flex-wrap gap-2">
+                      {player.name}
+                      {player.bankedCashOut > 0 && <span className="text-xs text-indigo-400 bg-indigo-900/30 px-2 py-0.5 rounded border border-indigo-500/30">Rejoined</span>}
+                    </div>
+                    <div className="text-sm text-slate-400 mt-0.5 flex items-center flex-wrap gap-x-2 gap-y-1">
+                      <span className="text-white font-bold text-base">{player.buyInCount} buy-ins</span>
+                      <span>({formatCurrency((player.buyInCount * buyInValue) + (player.customBuyInValue || 0))})</span>
+                      {(player.customBuyInValue !== 0) && <span className="text-xs text-amber-400 bg-amber-900/20 px-1.5 py-0.5 rounded">Custom</span>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-3">
+                    <button onClick={() => handleSubBuyIn(player.id)} className="h-11 w-11 shrink-0 flex items-center justify-center bg-slate-700 active:bg-slate-600 rounded-xl text-slate-300 transition-colors"><Minus size={18}/></button>
+                    <button onClick={() => handleAddBuyIn(player.id)} className="h-11 w-11 shrink-0 flex items-center justify-center bg-indigo-600 active:bg-indigo-500 rounded-xl text-white"><Plus size={18}/></button>
+                    <button onClick={() => setCustomBuyInModal({ isOpen: true, playerId: player.id, amount: '' })} className="h-11 w-11 shrink-0 flex items-center justify-center bg-amber-600 active:bg-amber-500 rounded-xl text-white"><Coins size={18}/></button>
+                    <button onClick={() => openCashOutModal(player.id)} className="flex-1 h-11 bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 active:bg-emerald-600/40 rounded-xl flex items-center justify-center text-sm font-semibold transition-colors">
+                      <LogOut size={16} className="mr-1.5" /> Cash Out
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
 
             <div className="p-4 border-t border-slate-700 bg-slate-900/30">
@@ -900,7 +896,7 @@ export default function App() {
                   type="text" 
                   list="known-players"
                   placeholder="New or returning player name..."
-                  className="flex-1 bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-4 text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  className="flex-1 min-w-0 bg-slate-900 border border-slate-600 rounded-xl py-3 px-4 text-white focus:outline-none focus:border-indigo-500"
                   value={newPlayerName}
                   onChange={(e) => setNewPlayerName(e.target.value)}
                 />
@@ -911,10 +907,10 @@ export default function App() {
                 </datalist>
                 <button 
                   type="submit"
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-5 rounded-lg flex items-center transition-colors disabled:opacity-50"
+                  className="bg-indigo-600 active:bg-indigo-700 text-white font-medium py-3 px-4 rounded-xl flex items-center shrink-0 transition-colors disabled:opacity-50"
                   disabled={!newPlayerName.trim()}
                 >
-                  <Plus size={18} className="mr-1.5" /> Add Player
+                  <Plus size={18} className="mr-1" /> Add
                 </button>
               </form>
             </div>
@@ -927,50 +923,45 @@ export default function App() {
                   <CheckCircle2 className="mr-2 h-5 w-5 text-emerald-400"/> Cashed Out Players
                 </h2>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-900/50 text-slate-400 text-sm uppercase tracking-wider">
-                      <th className="p-4 font-medium">Player</th>
-                      <th className="p-4 font-medium">Buy-in Value</th>
-                      <th className="p-4 font-medium">Final Chips</th>
-                      <th className="p-4 font-medium">Final Cash</th>
-                      <th className="p-4 font-medium">Net</th>
-                      <th className="p-4 font-medium text-center">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-700/50">
-                    {cashedOutPlayers.map((player) => (
-                      <tr key={player.id} className="bg-slate-800/30 hover:bg-slate-700/20 transition-colors">
-                        <td className="p-4 font-medium text-slate-200">{player.name}</td>
-                        <td className="p-4 text-slate-400">{formatCurrency(((player.buyInCount + (player.bankedBuyInCount || 0)) * buyInValue) + (player.customBuyInValue || 0) + (player.bankedCustomBuyInValue || 0))}</td>
-                        <td className="p-4 font-bold text-slate-300">{(player.chips || 0) + (player.bankedChips || 0)}</td>
-                        <td className="p-4 font-bold text-emerald-400">{formatCurrency(player.bankedCashOut + player.currentCashOut)}</td>
-                        <td className="p-4">
-                          <span className={`font-bold px-2 py-1 rounded bg-slate-900 ${player.net > 0 ? 'text-emerald-400' : player.net < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
-                            {player.net > 0 ? '+' : ''}{formatCurrency(player.net)}
-                          </span>
-                        </td>
-                        <td className="p-4 text-center">
-                          <div className="flex justify-center gap-2">
-                            <button onClick={() => openCashOutModal(player.id, player.chips)} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors">
-                              <Pencil size={16} />
-                            </button>
-                            <button onClick={() => handleRejoin(player.id)} className="px-3 py-1.5 bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-600/40 rounded flex items-center text-sm font-medium transition-colors">
-                              <RotateCcw size={14} className="mr-1.5" /> Rejoin
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="divide-y divide-slate-700/50">
+                {cashedOutPlayers.map((player) => (
+                  <div key={player.id} className="p-4 bg-slate-800/30">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-semibold text-slate-100 text-lg truncate">{player.name}</div>
+                      <span className={`font-bold px-2.5 py-1 rounded-lg bg-slate-900 shrink-0 ${player.net > 0 ? 'text-emerald-400' : player.net < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                        {player.net > 0 ? '+' : ''}{formatCurrency(player.net)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+                      <div className="bg-slate-900/50 rounded-lg py-2">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">Buy-in</div>
+                        <div className="text-sm font-semibold text-slate-300">{formatCurrency(((player.buyInCount + (player.bankedBuyInCount || 0)) * buyInValue) + (player.customBuyInValue || 0) + (player.bankedCustomBuyInValue || 0))}</div>
+                      </div>
+                      <div className="bg-slate-900/50 rounded-lg py-2">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">Chips</div>
+                        <div className="text-sm font-semibold text-slate-300">{(player.chips || 0) + (player.bankedChips || 0)}</div>
+                      </div>
+                      <div className="bg-slate-900/50 rounded-lg py-2">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">Cash</div>
+                        <div className="text-sm font-semibold text-emerald-400">{formatCurrency(player.bankedCashOut + player.currentCashOut)}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-3">
+                      <button onClick={() => openCashOutModal(player.id, player.chips)} className="h-11 w-11 shrink-0 flex items-center justify-center text-slate-300 bg-slate-700/60 active:bg-slate-600 rounded-xl transition-colors">
+                        <Pencil size={16} />
+                      </button>
+                      <button onClick={() => handleRejoin(player.id)} className="flex-1 h-11 bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 active:bg-indigo-600/40 rounded-xl flex items-center justify-center text-sm font-semibold transition-colors">
+                        <RotateCcw size={14} className="mr-1.5" /> Rejoin
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
         </div>
 
-        <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-lg flex flex-col h-[500px]">
+        <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-lg flex flex-col h-72">
           <div className="p-4 border-b border-slate-700 bg-slate-800/50">
             <h2 className="text-lg font-semibold text-white flex items-center">
               <History className="mr-2 h-5 w-5 text-indigo-400"/> Session Logs
@@ -1001,7 +992,7 @@ export default function App() {
       <div className="flex justify-center pt-2">
         <button
           onClick={handleCalculate}
-          className="bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20 font-bold py-4 px-10 rounded-full flex items-center text-lg transition-all transform active:scale-95 disabled:opacity-50 disabled:active:scale-100"
+          className="bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20 font-bold py-4 px-6 w-full justify-center rounded-2xl flex items-center text-lg transition-all transform active:scale-95 disabled:opacity-50 disabled:active:scale-100"
           disabled={activePlayers.length > 0}
         >
           <Calculator size={22} className="mr-2" />
@@ -1032,12 +1023,12 @@ export default function App() {
               <div className="space-y-3">
                 {calculatedPayouts.map((tx, idx) => (
                   <div key={idx} className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
-                    <div className="flex items-center space-x-4 flex-1">
-                      <span className="font-semibold text-rose-400 w-24 truncate">{tx.from}</span>
-                      <ArrowRight className="text-slate-500" size={16} />
-                      <span className="font-semibold text-emerald-400 w-24 truncate">{tx.to}</span>
+                    <div className="flex items-center space-x-2 flex-1 min-w-0">
+                      <span className="font-semibold text-rose-400 truncate min-w-0">{tx.from}</span>
+                      <ArrowRight className="text-slate-500 shrink-0" size={16} />
+                      <span className="font-semibold text-emerald-400 truncate min-w-0">{tx.to}</span>
                     </div>
-                    <div className="text-lg font-bold text-white bg-slate-800 py-1.5 px-4 rounded-md border border-slate-700">
+                    <div className="text-lg font-bold text-white bg-slate-800 py-1.5 px-3 rounded-md border border-slate-700 shrink-0 ml-2">
                       {formatCurrency(tx.amount)}
                     </div>
                   </div>
@@ -1049,7 +1040,7 @@ export default function App() {
           <div className="p-5 border-t border-slate-700 bg-slate-900/30 flex justify-end">
             <button 
               onClick={handleSaveSession}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-6 rounded-lg flex items-center transition-colors"
+              className="w-full justify-center bg-indigo-600 active:bg-indigo-700 text-white font-bold py-3.5 rounded-xl flex items-center transition-colors"
             >
               <Save size={18} className="mr-2" /> End Session & Save
             </button>
@@ -1059,8 +1050,8 @@ export default function App() {
 
       {/* Modals */}
       {cashOutModal.isOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl max-w-sm w-full p-6 animation-slide-up">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl sm:max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto sheet">
             <h3 className="text-xl font-bold text-white mb-4">Cash Out Player</h3>
             <form onSubmit={submitCashOut}>
               <div className="mb-4">
@@ -1085,8 +1076,8 @@ export default function App() {
       )}
 
       {customBuyInModal.isOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl max-w-sm w-full p-6 animation-slide-up">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl sm:max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto sheet">
             <h3 className="text-xl font-bold text-white mb-4">Custom Amount</h3>
             <form onSubmit={submitCustomBuyIn}>
               <div className="mb-6">
@@ -1111,8 +1102,8 @@ export default function App() {
       )}
 
       {transferModal.isOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl max-w-sm w-full p-6 animation-slide-up">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl sm:max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto sheet">
             <h3 className="text-xl font-bold text-white mb-4 flex items-center"><ArrowRightLeft className="mr-2 text-indigo-400" size={24} /> Transfer Chips</h3>
             <form onSubmit={submitTransfer}>
               <div className="mb-4 space-y-4">
@@ -1178,7 +1169,7 @@ export default function App() {
             const top = (game.players || []).reduce((best, p) => (!best || p.net > best.net) ? p : best, null);
             const dur = typeof game.durationMinutes === 'number' ? game.durationMinutes : null;
             return (
-              <div key={game.id} className="bg-slate-800 rounded-xl border border-slate-700 p-5 hover:border-indigo-500/50 transition-colors cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3" onClick={() => { setSelectedGame(game); setDetailsBackTab('history'); setActiveTab('details'); }}>
+              <div key={game.id} className="bg-slate-800 rounded-xl border border-slate-700 p-5 hover:border-indigo-500/50 transition-colors cursor-pointer flex items-center justify-between gap-3" onClick={() => { setSelectedGame(game); setDetailsBackTab('history'); setActiveTab('details'); }}>
                 <div>
                   <div className="text-white font-semibold mb-1">{formatDate(game.date)}</div>
                   <div className="text-slate-400 text-sm flex flex-wrap items-center gap-y-1">
@@ -1213,7 +1204,7 @@ export default function App() {
             <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-900/20" disabled={!rosterInput.trim()}>Add Player</button>
           </form>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 p-5">
+        <div className="grid grid-cols-1 gap-3 p-4">
           {masterLedger.map(p => {
             const st = statsByName[p.name];
             const rank = earningsRank[p.name];
@@ -1265,7 +1256,7 @@ export default function App() {
         <button onClick={() => setActiveTab(statsBackTab)} className="text-slate-400 hover:text-white flex items-center"><ChevronRight size={20} className="mr-1 rotate-180" /> Back</button>
 
         <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-xl overflow-hidden">
-          <div className="p-6 sm:p-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-slate-900/30">
+          <div className="p-5 flex flex-col gap-4 bg-slate-900/30">
             <div>
               <h2 className="text-3xl font-extrabold text-white">{selectedPlayer.name}</h2>
               <div className="flex flex-wrap items-center gap-2 mt-2">
@@ -1279,19 +1270,19 @@ export default function App() {
             </div>
             <div className={`px-6 py-4 rounded-xl border ${toneOf(st.totalNet) === 'pos' ? 'bg-emerald-900/20 border-emerald-500/30' : toneOf(st.totalNet) === 'neg' ? 'bg-rose-900/20 border-rose-500/30' : 'bg-slate-900/50 border-slate-700'}`}>
               <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Lifetime earnings</div>
-              <div className={`text-4xl font-black ${toneOf(st.totalNet) === 'pos' ? 'text-emerald-400' : toneOf(st.totalNet) === 'neg' ? 'text-rose-400' : 'text-slate-300'}`}>{formatSigned(st.totalNet)}</div>
+              <div className={`text-3xl font-black ${toneOf(st.totalNet) === 'pos' ? 'text-emerald-400' : toneOf(st.totalNet) === 'neg' ? 'text-rose-400' : 'text-slate-300'}`}>{formatSigned(st.totalNet)}</div>
             </div>
           </div>
         </div>
 
         {st.games === 0 ? (
-          <div className="bg-slate-800 rounded-2xl border border-slate-700 p-10 text-center">
+          <div className="bg-slate-800 rounded-2xl border border-slate-700 p-8 text-center">
             <h3 className="text-lg font-medium text-white mb-2">No games yet</h3>
             <p className="text-slate-500 text-sm">Stats and graphs will appear once {selectedPlayer.name} plays a saved game.</p>
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="tile-grid grid grid-cols-2 gap-3">
               <StatTile label="Games played" value={st.games} sub={`${st.wins}W · ${st.losses}L`} />
               <StatTile label="Win rate" value={formatPct(st.winRate)} sub={`${st.wins} of ${st.games} games`} />
               <StatTile label="Avg profit / game" value={formatSigned(st.avgNet)} tone={toneOf(st.avgNet)} />
@@ -1311,7 +1302,7 @@ export default function App() {
             </div>
 
             <ChartCard title="Earnings over time" subtitle="Running total across all games">
-              <LineChart data={cumulative} color="#818cf8" />
+              <LineChart data={cumulative} color="#ffd24a" />
             </ChartCard>
 
             <ChartCard title="Profit / loss per game" subtitle={rows.length > 20 ? 'Last 20 games' : 'Every game'}>
@@ -1319,12 +1310,12 @@ export default function App() {
             </ChartCard>
 
             <ChartCard title="Buy-ins vs. returns" subtitle={rows.length > 20 ? 'Last 20 games' : 'What they put in vs. what they took out'}>
-              <BarChart data={buyCashBars} colors={['#fbbf24', '#818cf8']} legend={[{ name: 'Bought in', color: '#fbbf24' }, { name: 'Cashed out', color: '#818cf8' }]} />
+              <BarChart data={buyCashBars} colors={['#ff9b45', '#9ad9f7']} legend={[{ name: 'Bought in', color: '#ff9b45' }, { name: 'Cashed out', color: '#9ad9f7' }]} />
             </ChartCard>
 
             <ChartCard title="Time played per game" subtitle={timeBars.length ? `Average ${formatDuration(st.avgMinutes)}` : undefined}>
               {timeBars.length ? (
-                <BarChart data={timeBars} colors={['#22d3ee']} axisFmt={formatDuration} valueFmt={formatDuration} />
+                <BarChart data={timeBars} colors={['#9ad9f7']} axisFmt={formatDuration} valueFmt={formatDuration} />
               ) : (
                 <p className="text-sm text-slate-500 py-6 text-center">Time is tracked from games started after this update, so older games have no duration.</p>
               )}
@@ -1375,7 +1366,7 @@ export default function App() {
         </div>
 
         {!hasAnyGames ? (
-          <div className="bg-slate-800 rounded-2xl border border-slate-700 p-10 text-center">
+          <div className="bg-slate-800 rounded-2xl border border-slate-700 p-8 text-center">
             <Trophy size={32} className="mx-auto text-slate-600 mb-3" />
             <h3 className="text-lg font-medium text-white mb-2">No rankings yet</h3>
             <p className="text-slate-500 text-sm">Save a game session and players will be ranked here.</p>
@@ -1421,13 +1412,13 @@ export default function App() {
     <div className="max-w-4xl mx-auto animation-fade-in space-y-6">
       <div className="flex justify-between items-end mb-6"><div><h2 className="text-2xl font-bold text-white">Active Ledger & Dues</h2></div></div>
       <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden flex flex-col">
-        <div className="p-6 overflow-y-auto bg-slate-900/20">
+        <div className="p-4 overflow-y-auto bg-slate-900/20">
           {masterPayouts.length === 0 ? (
             <div className="text-center py-12"><h3 className="text-lg font-medium text-white mb-2">All settled up!</h3></div>
           ) : (
             <div className="space-y-4">
               {masterPayouts.map((tx, idx) => (
-                <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50">
+                <div key={idx} className="flex flex-col gap-3 justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50">
                   <div className="flex items-center space-x-4">
                     <span className="font-semibold text-rose-400 text-lg">{tx.from}</span>
                     <ArrowRight className="text-slate-400" size={16} />
@@ -1450,7 +1441,7 @@ export default function App() {
     <div className="max-w-4xl mx-auto animation-fade-in space-y-6">
       <div className="flex justify-between items-end mb-6"><div><h2 className="text-2xl font-bold text-white">Settlement Archive</h2></div></div>
       <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden flex flex-col">
-        <div className="p-6 overflow-y-auto bg-slate-900/20">
+        <div className="p-4 overflow-y-auto bg-slate-900/20">
           {settlements.map((tx) => (
             <div key={tx.id} className="flex items-center justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50 mb-4">
               <div className="flex items-center space-x-3">
@@ -1485,10 +1476,10 @@ export default function App() {
         <button onClick={() => setActiveTab(detailsBackTab)} className="text-slate-400 hover:text-white flex items-center"><ChevronRight size={20} className="mr-1 rotate-180" /> Back</button>
 
         <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-xl overflow-hidden">
-          <div className="p-6 sm:p-8 bg-slate-900/30 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="p-5 bg-slate-900/30 flex flex-col gap-4">
             <div>
               <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Game session</div>
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-white">{formatDate(g.date)}</h2>
+              <h2 className="text-2xl font-extrabold text-white">{formatDate(g.date)}</h2>
               {g.startedAt && <p className="text-sm text-slate-500 mt-2">Started {formatTime(g.startedAt)} · Ended {formatTime(g.endedAt || g.date)}</p>}
             </div>
             <div className="px-6 py-4 rounded-xl border bg-slate-900/50 border-slate-700">
@@ -1498,7 +1489,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="tile-grid grid grid-cols-2 gap-3">
           <StatTile label="Players" value={rows.length} />
           <StatTile label="Duration" value={formatDuration(duration)} sub={duration === null ? 'Not tracked for this game' : undefined} />
           <StatTile label="Top winner" value={winner ? winner.p.name : '—'} tone="pos" sub={winner ? formatSigned(winner.net) : undefined} />
@@ -1569,30 +1560,95 @@ export default function App() {
 
   const renderHome = () => {
     const totalGames = gamesHistory.length;
+    const totalPotPlayed = gamesHistory.reduce((sum, g) => sum + (g.totalPot || 0), 0);
+    const played = allStats.filter(st => st.games > 0);
+    const winners = played.filter(st => st.totalNet > EPS).sort((x, y) => y.totalNet - x.totalNet).slice(0, 3);
+    const losers = played.filter(st => st.totalNet < -EPS).sort((x, y) => x.totalNet - y.totalNet).slice(0, 3);
+    const openPlayer = (name) => { setSelectedPlayer(masterLedger.find(pl => pl.name === name) || { name }); setStatsBackTab('home'); setActiveTab('playerStats'); };
+
     return (
-      <div className="max-w-5xl mx-auto animation-fade-in space-y-8 relative z-10">
-        <div className="bg-gradient-to-br from-slate-800/90 to-slate-900 rounded-3xl border border-slate-700/50 shadow-2xl p-10 relative">
-          <h1 className="text-4xl font-black text-white mb-3">Welcome to StackSettler</h1>
-          <p className="text-slate-400 text-lg mb-8">Track your home games, manage buy-ins, and instantly calculate settlements.</p>
-          <div className="text-white mb-8">Games Played: {totalGames}</div>
-          {isSessionActive ? (
-            <div className="bg-emerald-900/20 border border-emerald-500/30 rounded-2xl p-5">
-              <div className="flex items-center text-emerald-400 font-semibold mb-1"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2" /> Session in progress</div>
-              <div className="text-slate-400 text-sm mb-4">{sessionPlayers.length} players · Pot {formatCurrency(sessionStats.totalBuyIn)} · started {formatTime(sessionStartedAt)}</div>
-              <button onClick={() => setActiveTab('session')} className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-8 rounded-xl flex items-center">
-                <Play size={22} className="mr-2" /> Resume Session
-              </button>
-            </div>
-          ) : (
-            <button onClick={() => setNewGameModal({ isOpen: true, selectedPlayerIds: roster.map(p => p.id) })} className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 px-8 rounded-xl flex items-center">
-              <Play size={22} className="mr-2" /> Start New Game Session
-            </button>
-          )}
+      <div className="animation-fade-in space-y-3 relative z-10">
+        <div className="px-1 pb-1">
+          <div className="text-sm text-slate-400">Welcome to</div>
+          <h1 className="text-3xl font-black text-white">StackSettler</h1>
         </div>
 
+        <div onClick={() => setActiveTab('history')} className="bg-[#ffd24a] text-[#1a1b24] rounded-3xl p-5 cursor-pointer">
+          <div className="flex items-start justify-between">
+            <div className="text-xs font-bold uppercase tracking-wide text-[#1a1b24]/70">Games played</div>
+            <div className="w-9 h-9 rounded-full bg-black/10 flex items-center justify-center"><ChevronRight size={18} /></div>
+          </div>
+          <div className="flex items-end justify-between mt-3">
+            <div className="text-6xl font-black leading-none">{totalGames}</div>
+            <div className="text-right text-sm font-semibold text-[#1a1b24]/80">
+              <div>{masterLedger.length} players</div>
+              <div>{formatCurrency(totalPotPlayed)} total pot</div>
+            </div>
+          </div>
+        </div>
+
+        {isSessionActive ? (
+          <div className="bg-[#86e39a] text-[#10331b] rounded-3xl p-5">
+            <div className="flex items-center font-bold mb-1"><span className="w-2 h-2 rounded-full bg-[#10331b] animate-pulse mr-2" /> Session in progress</div>
+            <div className="text-sm text-[#10331b]/70 mb-4">{sessionPlayers.length} players · Pot {formatCurrency(sessionStats.totalBuyIn)} · started {formatTime(sessionStartedAt)}</div>
+            <button onClick={() => setActiveTab('session')} className="w-full bg-[#10331b] text-white font-bold py-3.5 rounded-2xl flex items-center justify-center">
+              <Play size={20} className="mr-2" /> Resume Session
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setNewGameModal({ isOpen: true, selectedPlayerIds: roster.map(p => p.id) })} className="w-full bg-[#9ad9f7] text-[#0c2a3a] rounded-3xl p-5 flex items-center justify-between text-left">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wide text-[#0c2a3a]/70">New session</div>
+              <div className="text-xl font-black">Start New Game Session</div>
+            </div>
+            <div className="w-12 h-12 rounded-full bg-[#0c2a3a] text-[#9ad9f7] flex items-center justify-center shrink-0"><Play size={22} /></div>
+          </button>
+        )}
+
+        {played.length === 0 ? (
+          <div className="bg-[#8fe6ee] text-[#0a2f33] rounded-3xl p-5">
+            <div className="flex items-center font-black mb-1"><Trophy size={18} className="mr-2" /> No winners or losers yet</div>
+            <p className="text-sm text-[#0a2f33]/80">Finish a game session and the leaderboard shows up here.</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-[#86e39a] text-[#10331b] rounded-3xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-[#10331b]/70">Top winners</div>
+                  <Trophy size={18} />
+                </div>
+                {winners.length === 0 ? (
+                  <p className="text-sm font-medium">No one is ahead yet.</p>
+                ) : winners.map((st, i) => (
+                  <div key={st.name} onClick={() => openPlayer(st.name)} className="py-1.5 cursor-pointer">
+                    <div className="font-bold text-sm truncate">{i + 1}. {st.name}</div>
+                    <div className="font-black text-base">{formatSigned(st.totalNet)}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="bg-[#ff9b45] text-[#3a1a06] rounded-3xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-[#3a1a06]/70">Top losers</div>
+                  <TrendingDown size={18} />
+                </div>
+                {losers.length === 0 ? (
+                  <p className="text-sm font-medium">No one is behind yet.</p>
+                ) : losers.map((st, i) => (
+                  <div key={st.name} onClick={() => openPlayer(st.name)} className="py-1.5 cursor-pointer">
+                    <div className="font-bold text-sm truncate">{i + 1}. {st.name}</div>
+                    <div className="font-black text-base">{formatSigned(st.totalNet)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button onClick={() => setActiveTab('rankings')} className="w-full bg-slate-800 text-white font-semibold py-3.5 rounded-2xl flex items-center justify-center">See full rankings <ChevronRight size={16} className="ml-1" /></button>
+          </>
+        )}
+
         {newGameModal.isOpen && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-md">
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+            <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl p-6 w-full sm:max-w-md max-h-[90vh] overflow-y-auto sheet">
               <div className="flex justify-between mb-4"><h3 className="text-xl font-bold text-white">Select Players</h3><button onClick={() => setNewGameModal({isOpen: false, selectedPlayerIds: []})} className="text-slate-400"><X size={20} /></button></div>
               <form onSubmit={handleAddPlayerFromModal} className="flex gap-2 mb-4">
                 <input type="text" placeholder="Add a new player..." className="flex-1 bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-3 text-white focus:outline-none focus:border-indigo-500" value={newGamePlayerInput} onChange={(e) => setNewGamePlayerInput(e.target.value)} />
@@ -1621,21 +1677,26 @@ export default function App() {
 
   const currentTab = (activeTab === 'session' && !isSessionActive) ? 'home' : activeTab;
 
+  const tabItems = [
+    { key: 'home', label: 'Home', Icon: Home },
+    ...(isSessionActive ? [{ key: 'session', label: 'Live', Icon: Activity }] : []),
+    { key: 'players', label: 'Players', Icon: Users },
+    { key: 'rankings', label: 'Rankings', Icon: Trophy },
+    { key: 'history', label: 'History', Icon: History },
+    { key: 'more', label: 'More', Icon: Menu }
+  ];
+  const pageTitles = { home: 'Home', session: 'Live session', players: 'Players', playerStats: 'Player stats', rankings: 'Rankings', ledger: 'Ledger', history: 'History', details: 'Game', archive: 'Archive' };
+  const moreActive = moreOpen || currentTab === 'ledger' || currentTab === 'archive';
+
   return (
-    <div className="min-h-screen bg-[#0a0c10] text-slate-300 font-sans">
-      <nav className="bg-[#0f1117]/80 backdrop-blur-xl border-b border-slate-800/60 sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-16">
-          <div className="font-black text-xl text-white shrink-0">StackSettler</div>
-          <div className="flex space-x-1 sm:space-x-2 bg-black/40 p-1.5 rounded-xl border border-slate-800/80 overflow-x-auto min-w-0 ml-4">
-            {['home', ...(isSessionActive ? ['session'] : []), 'players', 'rankings', 'ledger', 'history', 'archive'].map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)} className={`px-3 py-2 rounded-md text-sm font-medium capitalize whitespace-nowrap flex items-center ${currentTab === tab ? 'bg-slate-800 text-white' : 'text-slate-400'}`}>
-                {tab === 'session' && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-1.5" />}{tab}
-              </button>
-            ))}
-          </div>
+    <div className="min-h-screen bg-[#15161e] text-slate-300 font-sans">
+      <header className="bg-[#1a1b24]/90 backdrop-blur-xl border-b border-slate-800/60 sticky top-0 z-40">
+        <div className="max-w-xl mx-auto px-4 h-14 flex items-center justify-between">
+          <div className="font-black text-lg text-white shrink-0 tracking-tight"><span className="text-indigo-400 mr-1.5">&#9824;</span>StackSettler</div>
+          <div className="text-sm font-medium text-slate-400">{pageTitles[currentTab]}</div>
         </div>
-      </nav>
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
+      </header>
+      <main className="max-w-xl mx-auto px-4 pt-4 pb-28 relative z-10">
         {currentTab === 'home' && renderHome()}
         {currentTab === 'session' && renderActiveSession()}
         {currentTab === 'players' && renderPlayers()}
@@ -1647,9 +1708,41 @@ export default function App() {
         {currentTab === 'archive' && renderArchive()}
       </main>
 
+      <nav className="tabbar fixed bottom-0 inset-x-0 z-40 bg-[#1a1b24]/95 backdrop-blur-xl border-t border-slate-800">
+        <div className="max-w-xl mx-auto flex">
+          {tabItems.map(({ key, label, Icon }) => {
+            const active = key === 'more' ? moreActive : (currentTab === key && !moreOpen);
+            return (
+              <button key={key} onClick={() => { if (key === 'more') setMoreOpen(true); else { setMoreOpen(false); setActiveTab(key); } }} className={`flex-1 flex flex-col items-center justify-center gap-0.5 pt-2.5 pb-2 text-[11px] font-medium transition-colors ${active ? 'text-indigo-400' : 'text-slate-500'}`}>
+                <span className="relative">
+                  <Icon size={22} />
+                  {key === 'session' && <span className="absolute -top-0.5 -right-1 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />}
+                </span>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {moreOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end" onClick={() => setMoreOpen(false)}>
+          <div className="bg-slate-800 border-t border-slate-700 rounded-t-3xl w-full max-w-xl mx-auto p-4 sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="w-10 h-1 bg-slate-600 rounded-full mx-auto mb-4" />
+            {[{ key: 'ledger', label: 'Ledger', Icon: Scale }, { key: 'archive', label: 'Archive', Icon: Archive }].map(({ key, label, Icon }) => (
+              <button key={key} onClick={() => { setMoreOpen(false); setActiveTab(key); }} className="w-full flex items-center p-4 rounded-xl active:bg-slate-700/60 text-left">
+                <Icon size={22} className="text-indigo-400 mr-4" />
+                <span className="flex-1 text-white font-medium">{label}</span>
+                <ChevronRight size={18} className="text-slate-500" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {confirmModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl max-w-sm w-full p-6">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl sm:max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto sheet">
             <h3 className="text-xl font-bold text-white mb-2">{confirmModal.title}</h3>
             <p className="text-slate-400 text-sm mb-6">{confirmModal.message}</p>
             <div className="flex gap-3">

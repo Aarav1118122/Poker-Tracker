@@ -3,8 +3,8 @@
   "short_name": "StackSettler",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0a0c10",
-  "theme_color": "#4f46e5",
+  "background_color": "#15161e",
+  "theme_color": "#15161e",
   "description": "Track home poker games and calculate perfect settlements.",
   "icons": [
     {
@@ -13,5 +13,6 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "orientation": "portrait"
 }
