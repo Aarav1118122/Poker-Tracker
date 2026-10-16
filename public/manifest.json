@@ -1,0 +1,17 @@
+{
+  "name": "StackSettler Poker Tracker",
+  "short_name": "StackSettler",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0c10",
+  "theme_color": "#4f46e5",
+  "description": "Track home poker games and calculate perfect settlements.",
+  "icons": [
+    {
+      "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a0/Spade_Icon.svg/512px-Spade_Icon.svg.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
