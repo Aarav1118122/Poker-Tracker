@@ -23,3 +23,19 @@ All data is stored locally on the device (browser localStorage). No account or i
     npm run cap:add
     npm run cap:sync
     npm run cap:open
+
+## Updating the app without losing data
+The workflow signs every build with the same key (`signing/debug.keystore`), so a new APK installs
+over the old one and keeps your games. Make sure the `signing` folder is uploaded to GitHub too.
+(The very first time you switch to this key, Android asks you to uninstall the old app first.
+Use Settings > Backup beforehand if your old version has it.)
+
+This is a debug key that anyone with the repo can see, which is fine for sideloading to your own
+phone but is not suitable for publishing on the Play Store.
+
+## Features
+- Live sessions, buy-ins, cash-outs and automatic settlement plans
+- Edit any game's settlement plan, mark each payment paid per game, or record custom payments in the Ledger
+- Edit finished game results, add game notes
+- Rankings with period filters, player stats and graphs
+- Currency and rounding settings, backup and restore (JSON), CSV export, share settlements

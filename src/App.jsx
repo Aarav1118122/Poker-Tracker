@@ -5,12 +5,115 @@ import {
   TrendingUp, TrendingDown, Clock, Minus, LogOut, Settings, RotateCcw, Scale,
   Pencil, ArrowRightLeft, Coins, BookOpen,
   Home, Trophy, Activity, Play, Trash2,
-  User, Check, Archive, Menu
+  User, Check, Archive, Menu, Share2
 } from 'lucide-react';
 // --- Helper Functions ---
 const generateId = () => Math.random().toString(36).substr(2, 9);
-const formatCurrency = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val || 0);
+const formatCurrency = (val) => { try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: activeCurrency }).format(val || 0); } catch (e) { return `$${(val || 0).toFixed(2)}`; } };
 const formatDate = (dateString) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}).format(new Date(dateString));
+
+// --- Settings, sharing & export helpers ---
+const readSetting = (key, fallback) => { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } };
+let activeCurrency = readSetting('pokerTracker_currency', 'USD');
+let settleRound = Number(readSetting('pokerTracker_roundTo', '5'));
+if (isNaN(settleRound)) settleRound = 5;
+const CURRENCIES = [['USD', '$ US dollar'], ['INR', '₹ Indian rupee'], ['EUR', '€ Euro'], ['GBP', '£ British pound'], ['AED', 'AED Dirham'], ['CAD', '$ Canadian dollar'], ['AUD', '$ Australian dollar'], ['SGD', '$ Singapore dollar']];
+const ROUND_OPTIONS = [[0, 'Exact amounts'], [1, 'Nearest 1'], [5, 'Nearest 5'], [10, 'Nearest 10'], [50, 'Nearest 50'], [100, 'Nearest 100']];
+const currencySymbol = () => {
+  try {
+    const part = new Intl.NumberFormat('en-US', { style: 'currency', currency: activeCurrency }).formatToParts(0).find(x => x.type === 'currency');
+    return part ? part.value : '$';
+  } catch (e) { return '$'; }
+};
+const copyText = async (text) => {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+};
+const downloadFile = (text, filename, mime) => {
+  try {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return true;
+  } catch (e) { return false; }
+};
+const shareOrCopy = async (title, text) => {
+  try {
+    if (navigator.share) { await navigator.share({ title, text }); return 'shared'; }
+  } catch (e) { if (e && e.name === 'AbortError') return 'cancelled'; }
+  return (await copyText(text)) ? 'copied' : 'failed';
+};
+const INPUT_CLS = 'w-full bg-slate-900 border border-slate-600 rounded-xl py-2.5 px-3 text-white focus:outline-none focus:border-indigo-500';
+const gamePayoutId = (tx, idx) => tx.id || `p${idx}`;
+
+// Works out which payments in each game are already covered by recorded payments (from the Ledger or the game)
+const computeGameSettlementStates = (games, settlements) => {
+  const ordered = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const rem = {};
+  ordered.forEach(g => {
+    rem[g.id] = {};
+    (g.players || []).forEach(p => {
+      const n = p.net || 0;
+      const debt = n < 0 ? -n : 0, credit = n > 0 ? n : 0;
+      rem[g.id][p.name] = { debt, credit, debt0: debt, credit0: credit };
+    });
+  });
+  const clear = (name, amount, kind, onlyGameId) => {
+    let left = amount;
+    const ids = onlyGameId ? [onlyGameId] : ordered.map(g => g.id);
+    ids.forEach(id => {
+      const r = rem[id] && rem[id][name];
+      if (!r || left <= 0.0001) return;
+      const take = Math.min(left, r[kind]);
+      r[kind] -= take;
+      left -= take;
+    });
+  };
+  const sorted = [...settlements].sort((a, b) => ((a.gameId ? 0 : 1) - (b.gameId ? 0 : 1)) || (new Date(a.date) - new Date(b.date)));
+  sorted.forEach(st => {
+    const only = st.gameId && rem[st.gameId] ? st.gameId : null;
+    clear(st.from, st.amount, 'debt', only);
+    clear(st.to, st.amount, 'credit', only);
+  });
+  const out = {};
+  ordered.forEach(g => {
+    const debtPool = {}, creditPool = {};
+    Object.keys(rem[g.id]).forEach(name => {
+      const r = rem[g.id][name];
+      debtPool[name] = Math.max(0, r.debt0 - r.debt);
+      creditPool[name] = Math.max(0, r.credit0 - r.credit);
+    });
+    out[g.id] = (g.payouts || []).map((tx, idx) => {
+      const pid = gamePayoutId(tx, idx);
+      const tagged = settlements.some(s => s.gameId === g.id && s.payoutId === pid);
+      const a = tx.amount;
+      const payer = debtPool[tx.from] || 0, recv = creditPool[tx.to] || 0;
+      if (tagged) {
+        debtPool[tx.from] = payer - Math.min(a, payer);
+        creditPool[tx.to] = recv - Math.min(a, recv);
+        return { state: 'paid', settledAmt: a };
+      }
+      const cover = Math.min(a, payer, recv);
+      debtPool[tx.from] = payer - cover;
+      creditPool[tx.to] = recv - cover;
+      return { state: cover >= a - 0.01 ? 'ledger' : cover > 0.01 ? 'partial' : 'open', settledAmt: cover };
+    });
+  });
+  return out;
+};
+
 
 // --- Greedy Settlement Algorithm ---
 const calculateSimplifiedPayouts = (originalPlayers) => {
@@ -21,7 +124,7 @@ const calculateSimplifiedPayouts = (originalPlayers) => {
   players.forEach(p => {
     if (p.net < -0.01) {
       const debt = Math.abs(p.net);
-      const favoredDebt = Math.floor(debt / 5) * 5;
+      const favoredDebt = settleRound > 0 ? Math.floor(debt / settleRound) * settleRound : debt;
       const discount = debt - favoredDebt;
       
       p.net = -favoredDebt;
@@ -189,7 +292,7 @@ const CHART_W = 600, CHART_H = 220, PAD = { l: 54, r: 14, t: 14, b: 30 };
 const shortMoney = (v) => {
   const a = Math.abs(v);
   const s = a >= 1000 ? `${(a / 1000).toFixed(1)}k` : (Math.round(a * 10) / 10).toString();
-  return `${v < -EPS ? '-' : ''}$${s}`;
+  return `${v < -EPS ? '-' : ''}${currencySymbol()}${s}`;
 };
 
 const ChartGrid = ({ min, max, y, axisFmt }) => {
@@ -296,6 +399,22 @@ const StatTile = ({ label, value, sub, tone }) => (
   </div>
 );
 
+const SheetShell = ({ title, subtitle, onClose, children }) => (
+  <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+    <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md p-5 max-h-[90vh] overflow-y-auto sheet">
+      <div className="w-10 h-1 bg-slate-600 rounded-full mx-auto mb-4 sm:hidden" />
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h3 className="text-xl font-bold text-white">{title}</h3>
+          {subtitle && <p className="text-sm text-slate-400 mt-1">{subtitle}</p>}
+        </div>
+        <button onClick={onClose} className="text-slate-400 p-1 shrink-0"><X size={22} /></button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+
 // --- Components ---
 export default function App() {
   const [restored] = useState(readActiveSession);
@@ -303,6 +422,20 @@ export default function App() {
   const [sessionStartedAt, setSessionStartedAt] = useState(restored ? restored.startedAt : null);
   const [confirmModal, setConfirmModal] = useState(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [toast, setToast] = useState('');
+  const [currency, setCurrency] = useState(activeCurrency);
+  const [roundTo, setRoundTo] = useState(settleRound);
+  const [keepAwake, setKeepAwake] = useState(readSetting('pokerTracker_keepAwake', '1') === '1');
+  const [sessionNotes, setSessionNotes] = useState(restored && restored.notes ? restored.notes : '');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [backupText, setBackupText] = useState('');
+  const [restoreText, setRestoreText] = useState('');
+  const [paymentSheet, setPaymentSheet] = useState(null);
+  const [planEdit, setPlanEdit] = useState(null);
+  const [resultsEdit, setResultsEdit] = useState(null);
+  const [rankPeriod, setRankPeriod] = useState('all');
+  const [ledgerPlan, setLedgerPlan] = useState(() => { try { const raw = localStorage.getItem('pokerTracker_ledgerPlan'); return raw ? JSON.parse(raw) : null; } catch (e) { return null; } });
+  const [noteDraft, setNoteDraft] = useState('');
   const [detailsBackTab, setDetailsBackTab] = useState('history');
   const isSessionActive = !!sessionStartedAt;
   const [gamesHistory, setGamesHistory] = useState([]);
@@ -374,7 +507,12 @@ export default function App() {
 
   const masterPayouts = useMemo(() => {
     return calculateSimplifiedPayouts(masterLedger);
-  }, [masterLedger]);
+  }, [masterLedger, roundTo]);
+
+  const balanceKey = useMemo(() => masterLedger.map(p => `${p.name}:${round2(p.net)}`).sort().join('|'), [masterLedger]);
+  const customLedgerActive = !!(ledgerPlan && ledgerPlan.key === balanceKey);
+  const ledgerSettled = (customLedgerActive ? ledgerPlan.rows : masterPayouts).length === 0;
+  const gameStates = useMemo(() => computeGameSettlementStates(gamesHistory, settlements), [gamesHistory, settlements]);
 
   // --- Player stats & rankings ---
   const allStats = useMemo(() => masterLedger.map(p => ({ ...computePlayerStats(gamesHistory, p.name), inRoster: p.inRoster, id: p.id })), [masterLedger, gamesHistory]);
@@ -385,14 +523,23 @@ export default function App() {
     return r;
   }, [allStats]);
   const rankedPlayerCount = Object.keys(earningsRank).length;
+  const periodStats = useMemo(() => {
+    if (rankPeriod === 'all') return allStats;
+    const now = new Date();
+    const from = rankPeriod === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1)
+      : rankPeriod === 'year' ? new Date(now.getFullYear(), 0, 1)
+      : new Date(now.getTime() - 30 * 86400000);
+    const games = gamesHistory.filter(g => new Date(g.date) >= from);
+    return masterLedger.map(p => ({ ...computePlayerStats(games, p.name), inRoster: p.inRoster, id: p.id }));
+  }, [rankPeriod, allStats, gamesHistory, masterLedger]);
   const rankings = useMemo(() => {
     const metric = RANK_METRICS.find(m => m.key === rankMetric) || RANK_METRICS[0];
-    const withVal = allStats.map(st => ({ s: st, v: metric.get(st) }));
+    const withVal = periodStats.map(st => ({ s: st, v: metric.get(st) }));
     const valid = (x) => x.v !== null && x.v !== undefined && !isNaN(x.v);
     const ranked = withVal.filter(valid).sort((a, b) => (b.v - a.v) || (b.s.games - a.s.games));
     const unranked = withVal.filter(x => !valid(x));
     return { metric, ranked, unranked };
-  }, [allStats, rankMetric]);
+  }, [periodStats, rankMetric]);
 
   // --- Load data from local storage ---
   useEffect(() => {
@@ -416,13 +563,45 @@ export default function App() {
       if (sessionStartedAt) {
         localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify({
           startedAt: sessionStartedAt, players: sessionPlayers, logs: sessionLogs,
-          buyInValue, chipRatio, calculatedPayouts
+          buyInValue, chipRatio, calculatedPayouts, notes: sessionNotes
         }));
       } else {
         localStorage.removeItem(ACTIVE_SESSION_KEY);
       }
     } catch (e) {}
-  }, [sessionStartedAt, sessionPlayers, sessionLogs, buyInValue, chipRatio, calculatedPayouts]);
+  }, [sessionStartedAt, sessionPlayers, sessionLogs, buyInValue, chipRatio, calculatedPayouts, sessionNotes]);
+
+  // --- Custom ledger plan: save it, and drop it if balances change underneath it ---
+  useEffect(() => {
+    try {
+      if (ledgerPlan) localStorage.setItem('pokerTracker_ledgerPlan', JSON.stringify(ledgerPlan));
+      else localStorage.removeItem('pokerTracker_ledgerPlan');
+    } catch (e) {}
+  }, [ledgerPlan]);
+  useEffect(() => {
+    if (ledgerPlan && ledgerPlan.key !== balanceKey) {
+      setLedgerPlan(null);
+      showToast('Balances changed, so your custom plan was reset');
+    }
+  }, [balanceKey, ledgerPlan]);
+
+  // --- Keep the screen on during a live session ---
+  useEffect(() => {
+    if (!isSessionActive || !keepAwake) return undefined;
+    let lock = null;
+    const acquire = async () => {
+      try { if ('wakeLock' in navigator) lock = await navigator.wakeLock.request('screen'); } catch (e) {}
+    };
+    acquire();
+    const onVis = () => { if (document.visibilityState === 'visible') acquire(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      try { if (lock) lock.release(); } catch (e) {}
+    };
+  }, [isSessionActive, keepAwake]);
+
+  useEffect(() => { setNoteDraft(selectedGame && selectedGame.notes ? selectedGame.notes : ''); }, [selectedGame ? selectedGame.id : null]);
 
   // --- Functions ---
   const saveRoster = (newRoster) => {
@@ -469,8 +648,8 @@ export default function App() {
     saveRoster(newRoster);
   };
 
-  const handleSettlePayment = (from, to, amount) => {
-    const newTx = { id: generateId(), date: new Date().toISOString(), from, to, amount };
+  const handleSettlePayment = (from, to, amount, meta = {}) => {
+    const newTx = { id: generateId(), date: new Date().toISOString(), from, to, amount, ...meta };
     const updated = [newTx, ...settlements];
     setSettlements(updated);
     localStorage.setItem('pokerTracker_settlements', JSON.stringify(updated));
@@ -493,6 +672,7 @@ export default function App() {
     setSessionLogs([]);
     setCalculatedPayouts(null);
     setSessionStartedAt(new Date().toISOString());
+    setSessionNotes('');
     setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
     setActiveTab('session');
     
@@ -713,6 +893,7 @@ export default function App() {
       totalPot: sessionStats.totalBuyIn,
       buyInValue: buyInValue,
       chipRatio: chipRatio,
+      notes: sessionNotes.trim(),
       players: sessionPlayers.map(p => ({
         ...p,
         totalBuyIn: ((p.buyInCount + (p.bankedBuyInCount || 0)) * buyInValue) + (p.customBuyInValue || 0) + (p.bankedCustomBuyInValue || 0),
@@ -735,6 +916,7 @@ export default function App() {
       setCalculatedPayouts(null);
       setSessionError('');
       setSessionStartedAt(null);
+      setSessionNotes('');
       setActiveTab('details');
     } catch (err) {
       setSessionError("Failed to save session. Try again.");
@@ -747,6 +929,7 @@ export default function App() {
     setCalculatedPayouts(null);
     setSessionError('');
     setSessionStartedAt(null);
+    setSessionNotes('');
     setActiveTab('home');
   };
 
@@ -757,6 +940,424 @@ export default function App() {
       localStorage.setItem('pokerTracker_games', JSON.stringify(updatedHistory));
       if (selectedGame?.id === gameId) setActiveTab('history');
     } catch (err) {}
+  };
+
+  // --- Toast, sharing, settings, backup ---
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2600); };
+  const doShare = async (title, text) => {
+    const r = await shareOrCopy(title, text);
+    if (r === 'copied') showToast('Copied to clipboard');
+    else if (r === 'failed') showToast("Couldn't share or copy");
+  };
+  const buildSettlementText = (title, payouts, paidIds) => `${title}\n` + (payouts.length
+    ? payouts.map((tx, idx) => `${tx.from} pays ${tx.to} ${formatCurrency(tx.amount)}${paidIds && paidIds[idx] ? ' (paid)' : ''}`).join('\n')
+    : 'Everyone is settled up.');
+  const persistSettlements = (list) => {
+    setSettlements(list);
+    try { localStorage.setItem('pokerTracker_settlements', JSON.stringify(list)); } catch (e) {}
+  };
+  const updateGame = (newGame) => {
+    const list = gamesHistory.map(x => x.id === newGame.id ? newGame : x);
+    setGamesHistory(list);
+    try { localStorage.setItem('pokerTracker_games', JSON.stringify(list)); } catch (e) {}
+    if (selectedGame && selectedGame.id === newGame.id) setSelectedGame(newGame);
+  };
+
+  const changeCurrency = (code) => {
+    activeCurrency = code;
+    try { localStorage.setItem('pokerTracker_currency', code); } catch (e) {}
+    setCurrency(code);
+  };
+  const changeRound = (val) => {
+    settleRound = val;
+    try { localStorage.setItem('pokerTracker_roundTo', String(val)); } catch (e) {}
+    setRoundTo(val);
+  };
+  const changeKeepAwake = (val) => {
+    try { localStorage.setItem('pokerTracker_keepAwake', val ? '1' : '0'); } catch (e) {}
+    setKeepAwake(val);
+  };
+
+  const buildBackup = () => JSON.stringify({
+    app: 'StackSettler', version: 1, exportedAt: new Date().toISOString(),
+    games: gamesHistory, roster: roster, settlements: settlements,
+    settings: { currency: activeCurrency, roundTo: settleRound, keepAwake: keepAwake }
+  }, null, 1);
+  const buildCsv = () => {
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const lines = ['date,player,buy_in,cash_out,net,minutes'];
+    [...gamesHistory].reverse().forEach(g => (g.players || []).forEach(p => {
+      const r = getPlayerGameStats(g, p);
+      lines.push([esc(new Date(g.date).toISOString()), esc(p.name), r.buyIn.toFixed(2), r.cashOut.toFixed(2), r.net.toFixed(2), r.minutes === null ? '' : Math.round(r.minutes)].join(','));
+    }));
+    return lines.join('\n');
+  };
+  const exportNow = async (kind) => {
+    const text = kind === 'json' ? buildBackup() : buildCsv();
+    const day = new Date().toISOString().slice(0, 10);
+    const dl = downloadFile(text, kind === 'json' ? `stacksettler-backup-${day}.json` : `stacksettler-games-${day}.csv`, kind === 'json' ? 'application/json' : 'text/csv');
+    const cp = await copyText(text);
+    setBackupText(text);
+    showToast(dl && cp ? 'File saved and text copied' : dl ? 'File saved' : cp ? 'Copied to clipboard' : 'Select the text below to copy it');
+  };
+  const restoreBackup = (text) => {
+    let data;
+    try { data = JSON.parse(text); } catch (e) { showToast('That is not valid backup text'); return; }
+    if (!data || data.app !== 'StackSettler' || !Array.isArray(data.games)) { showToast('This is not a StackSettler backup'); return; }
+    setGamesHistory(data.games);
+    try { localStorage.setItem('pokerTracker_games', JSON.stringify(data.games)); } catch (e) {}
+    const r = Array.isArray(data.roster) ? data.roster : [];
+    setRoster(r); saveRoster(r);
+    persistSettlements(Array.isArray(data.settlements) ? data.settlements : []);
+    if (data.settings) {
+      if (data.settings.currency) changeCurrency(data.settings.currency);
+      if (typeof data.settings.roundTo === 'number') changeRound(data.settings.roundTo);
+      if (typeof data.settings.keepAwake === 'boolean') changeKeepAwake(data.settings.keepAwake);
+    }
+    setRestoreText('');
+    showToast(`Restored ${data.games.length} games`);
+  };
+
+  // --- Per-game settlements ---
+  const findGameSettlement = (gameId, pid) => settlements.find(s => s.gameId === gameId && s.payoutId === pid);
+  const rowState = (game, idx) => {
+    const st = (gameStates[game.id] || [])[idx] || { state: 'open', settledAmt: 0 };
+    const tx = (game.payouts || [])[idx];
+    if (ledgerSettled && st.state !== 'paid' && tx) return { state: 'ledger', settledAmt: tx.amount };
+    return st;
+  };
+  const gameSettleStatus = (game) => {
+    const list = game.payouts || [];
+    let paid = 0;
+    list.forEach((tx, idx) => { const st = rowState(game, idx).state; if (st === 'paid' || st === 'ledger') paid++; });
+    return { total: list.length, paid };
+  };
+  // Warn before a payment would push someone past zero (usually a double payment)
+  const overpayMessages = (txs) => {
+    const net = {};
+    masterLedger.forEach(pl => { net[pl.name] = pl.net; });
+    const msgs = [];
+    txs.forEach(tx => {
+      const nf = net[tx.from] || 0;
+      const nt = net[tx.to] || 0;
+      if (nf + tx.amount > 0.01) msgs.push(`${tx.from} only owes ${formatCurrency(Math.max(0, -nf))} right now, so paying ${formatCurrency(tx.amount)} would make ${tx.from} owed ${formatCurrency(nf + tx.amount)}.`);
+      if (nt - tx.amount < -0.01) msgs.push(`${tx.to} is only owed ${formatCurrency(Math.max(0, nt))} right now, so receiving ${formatCurrency(tx.amount)} would make ${tx.to} owe ${formatCurrency(tx.amount - nt)}.`);
+      net[tx.from] = nf + tx.amount;
+      net[tx.to] = nt - tx.amount;
+    });
+    return msgs;
+  };
+  const confirmPayments = (txs, doIt) => {
+    const msgs = overpayMessages(txs);
+    if (!msgs.length) { doIt(); return; }
+    setConfirmModal({ title: 'This looks like paying twice', message: `${msgs.slice(0, 2).join(' ')} If this was already marked in the Ledger, undo that in the Archive first.`, confirmLabel: 'Mark anyway', onConfirm: doIt });
+  };
+  const toggleGamePayout = (game, tx, idx) => {
+    const pid = gamePayoutId(tx, idx);
+    const ex = findGameSettlement(game.id, pid);
+    if (ex) { handleDeleteSettlement(ex.id); return; }
+    confirmPayments([tx], () => handleSettlePayment(tx.from, tx.to, tx.amount, { gameId: game.id, payoutId: pid }));
+  };
+  const settleAllGamePayouts = (game) => {
+    const add = [];
+    (game.payouts || []).forEach((tx, idx) => {
+      const pid = gamePayoutId(tx, idx);
+      const rs = rowState(game, idx);
+      if (rs.state === 'open') add.push({ id: generateId(), date: new Date().toISOString(), from: tx.from, to: tx.to, amount: tx.amount, gameId: game.id, payoutId: pid });
+      else if (rs.state === 'partial') add.push({ id: generateId(), date: new Date().toISOString(), from: tx.from, to: tx.to, amount: round2(tx.amount - rs.settledAmt), gameId: game.id, payoutId: pid });
+    });
+    if (add.length) confirmPayments(add, () => persistSettlements([...add, ...settlements]));
+  };
+  const markRestPaid = (game, tx, idx, rest) => {
+    const pid = gamePayoutId(tx, idx);
+    const amount = round2(rest);
+    confirmPayments([{ from: tx.from, to: tx.to, amount }], () => handleSettlePayment(tx.from, tx.to, amount, { gameId: game.id, payoutId: pid }));
+  };
+  const undoAllGamePayouts = (game) => persistSettlements(settlements.filter(s => s.gameId !== game.id));
+
+  // --- Edit who pays who (game, ledger, or live session) ---
+  const rowsFromPayouts = (list) => (list || []).map((tx, idx) => ({ id: gamePayoutId(tx, idx), from: tx.from, to: tx.to, amount: String(tx.amount) }));
+  const planContext = (pe) => {
+    if (!pe) return { names: [], nets: [] };
+    if (pe.kind === 'ledger') return { names: masterLedger.map(p => p.name), nets: masterLedger.map(p => ({ name: p.name, net: p.net })) };
+    if (pe.kind === 'session') return { names: sessionPlayers.map(p => p.name), nets: sessionPlayers.map(p => ({ name: p.name, net: p.net })) };
+    const g = gamesHistory.find(x => x.id === pe.gameId);
+    const ps = g ? (g.players || []) : [];
+    return { names: ps.map(p => p.name), nets: ps.map(p => ({ name: p.name, net: p.net })) };
+  };
+  const openPlanEditor = (g) => setPlanEdit({ kind: 'game', gameId: g.id, rows: rowsFromPayouts(g.payouts) });
+  const openLedgerPlanEditor = () => setPlanEdit({ kind: 'ledger', rows: rowsFromPayouts(customLedgerActive ? ledgerPlan.rows : masterPayouts) });
+  const openSessionPlanEditor = () => setPlanEdit({ kind: 'session', rows: rowsFromPayouts(calculatedPayouts) });
+  const setPlanRow = (idx, patch) => setPlanEdit(prev => ({ ...prev, rows: prev.rows.map((r, i) => i === idx ? { ...r, ...patch } : r) }));
+  const addPlanRow = () => setPlanEdit(prev => {
+    const names = planContext(prev).names;
+    return { ...prev, rows: [...prev.rows, { id: generateId(), from: names[0] || '', to: names[1] || '', amount: '' }] };
+  });
+  const removePlanRow = (idx) => setPlanEdit(prev => ({ ...prev, rows: prev.rows.filter((_, i) => i !== idx) }));
+  const resetPlanRows = () => setPlanEdit(prev => {
+    const nets = planContext(prev).nets;
+    const suggested = calculateSimplifiedPayouts(nets.map(n => ({ name: n.name, net: n.net })));
+    return { ...prev, rows: suggested.map(tx => ({ id: generateId(), from: tx.from, to: tx.to, amount: String(tx.amount) })) };
+  });
+  const savePlanEdit = () => {
+    const rows = planEdit.rows.map(r => ({ id: r.id, from: r.from, to: r.to, amount: round2(Number(r.amount)) }));
+    if (planEdit.kind === 'ledger') {
+      setLedgerPlan(rows.length ? { key: balanceKey, rows } : null);
+    } else if (planEdit.kind === 'session') {
+      setCalculatedPayouts(rows);
+    } else {
+      const g = gamesHistory.find(x => x.id === planEdit.gameId);
+      if (!g) { setPlanEdit(null); return; }
+      updateGame({ ...g, payouts: rows });
+      const keep = settlements.filter(s => {
+        if (s.gameId !== g.id) return true;
+        const r = rows.find(x => x.id === s.payoutId);
+        return r && r.from === s.from && r.to === s.to && Math.abs(r.amount - s.amount) < 0.005;
+      });
+      if (keep.length !== settlements.length) persistSettlements(keep);
+    }
+    setPlanEdit(null);
+    showToast('Plan updated');
+  };
+  const settleLedgerRow = (tx) => {
+    confirmPayments([tx], () => {
+      handleSettlePayment(tx.from, tx.to, tx.amount);
+      if (customLedgerActive) {
+        const rows = ledgerPlan.rows.filter(r => r.id !== tx.id);
+        const nets = {};
+        masterLedger.forEach(p => { nets[p.name] = p.net; });
+        if (nets[tx.from] !== undefined) nets[tx.from] += tx.amount;
+        if (nets[tx.to] !== undefined) nets[tx.to] -= tx.amount;
+        const key = Object.keys(nets).map(n => `${n}:${round2(nets[n])}`).sort().join('|');
+        setLedgerPlan(rows.length ? { key, rows } : null);
+      }
+    });
+  };
+
+  // --- Edit a game's results ---
+  const openResultsEditor = (g) => setResultsEdit({ gameId: g.id, rows: (g.players || []).map(p => { const r = getPlayerGameStats(g, p); return { name: p.name, buyIn: String(round2(r.buyIn)), cashOut: String(round2(r.cashOut)) }; }) });
+  const setResultRow = (idx, patch) => setResultsEdit(prev => ({ ...prev, rows: prev.rows.map((r, i) => i === idx ? { ...r, ...patch } : r) }));
+  const saveResultsEdit = () => {
+    const g = gamesHistory.find(x => x.id === resultsEdit.gameId);
+    if (!g) { setResultsEdit(null); return; }
+    const nums = resultsEdit.rows.map(r => ({ name: r.name, buyIn: round2(Number(r.buyIn) || 0), cashOut: round2(Number(r.cashOut) || 0) }));
+    const players = (g.players || []).map(p => {
+      const n = nums.find(x => x.name === p.name);
+      return { ...p, totalBuyIn: n.buyIn, totalCashOut: n.cashOut, net: round2(n.cashOut - n.buyIn), normalizationAdjustment: 0 };
+    });
+    const payouts = calculateSimplifiedPayouts(players.map(p => ({ name: p.name, net: p.net }))).map(tx => ({ id: generateId(), from: tx.from, to: tx.to, amount: tx.amount }));
+    updateGame({ ...g, players, payouts, totalPot: round2(nums.reduce((s, n) => s + n.buyIn, 0)) });
+    persistSettlements(settlements.filter(s => s.gameId !== g.id));
+    setResultsEdit(null);
+    showToast('Game results updated');
+  };
+  const requestSaveResults = () => {
+    const hasPaid = settlements.some(s => s.gameId === resultsEdit.gameId);
+    if (hasPaid) setConfirmModal({ title: 'Update results?', message: 'This rebuilds the settlement plan and clears the paid marks for this game.', confirmLabel: 'Update', onConfirm: saveResultsEdit });
+    else saveResultsEdit();
+  };
+
+  // --- Record a custom payment ---
+  const openPaymentSheet = (init = {}) => setPaymentSheet({ from: init.from || '', to: init.to || '', amount: init.amount !== undefined ? String(init.amount) : '' });
+  const savePayment = () => {
+    const amt = round2(Number(paymentSheet.amount));
+    if (!paymentSheet.from || !paymentSheet.to || paymentSheet.from === paymentSheet.to || !(amt > 0)) return;
+    const pay = { from: paymentSheet.from, to: paymentSheet.to, amount: amt };
+    setPaymentSheet(null);
+    confirmPayments([pay], () => { handleSettlePayment(pay.from, pay.to, pay.amount); showToast('Payment recorded'); });
+  };
+
+  // --- Sheets ---
+  const renderPlanEditor = () => {
+    if (!planEdit) return null;
+    const ctx = planContext(planEdit);
+    const names = ctx.names;
+    if (names.length === 0) return null;
+    const rows = planEdit.rows;
+    const left = ctx.nets.map(p => {
+      let moved = 0;
+      rows.forEach(r => { const a = Number(r.amount) || 0; if (r.to === p.name) moved += a; if (r.from === p.name) moved -= a; });
+      return { name: p.name, rest: round2(p.net - moved) };
+    }).filter(x => Math.abs(x.rest) > 0.009);
+    const valid = rows.every(r => r.from && r.to && r.from !== r.to && Number(r.amount) > 0);
+    const subtitle = planEdit.kind === 'ledger' ? 'Change who pays whom across all games. Nothing is marked paid until you tap Mark settled.'
+      : planEdit.kind === 'session' ? 'Change who pays whom before you end the session.'
+      : 'Change who pays whom for this game. Nothing is marked paid until you tap Mark paid.';
+    return (
+      <SheetShell title="Who pays who" subtitle={subtitle} onClose={() => setPlanEdit(null)}>
+        <div className="space-y-3 mb-3">
+          {rows.length === 0 && <p className="text-sm text-slate-500 text-center py-4">No payments in the plan. Add one below.</p>}
+          {rows.map((r, idx) => (
+            <div key={r.id} className="bg-slate-900/50 border border-slate-700 rounded-xl p-3">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <label className="block">
+                  <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Pays</span>
+                  <select value={r.from} onChange={(e) => setPlanRow(idx, { from: e.target.value })} className={INPUT_CLS}>
+                    {names.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Receives</span>
+                  <select value={r.to} onChange={(e) => setPlanRow(idx, { to: e.target.value })} className={INPUT_CLS}>
+                    {names.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="number" inputMode="decimal" min="0" placeholder={`Amount (${currencySymbol()})`} value={r.amount} onChange={(e) => setPlanRow(idx, { amount: e.target.value })} className={INPUT_CLS} />
+                <button onClick={() => removePlanRow(idx)} className="h-11 w-11 shrink-0 flex items-center justify-center bg-rose-900/30 text-rose-400 rounded-xl"><Trash2 size={16} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2 mb-4">
+          <button onClick={addPlanRow} className="flex-1 h-10 bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold flex items-center justify-center"><Plus size={16} className="mr-1" /> Add payment</button>
+          <button onClick={resetPlanRows} className="flex-1 h-10 bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold flex items-center justify-center"><RotateCcw size={14} className="mr-1.5" /> Suggested plan</button>
+        </div>
+        {left.length > 0 && (
+          <div className="bg-slate-900/50 border border-slate-700 rounded-xl p-3 mb-4 text-sm">
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Left unsettled by this plan</div>
+            {left.map(x => (
+              <div key={x.name} className="flex justify-between text-slate-300"><span>{x.name}</span><span className={x.rest > 0 ? 'text-emerald-400' : 'text-rose-400'}>{x.rest > 0 ? 'is owed ' : 'still owes '}{formatCurrency(Math.abs(x.rest))}</span></div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-3">
+          <button onClick={() => setPlanEdit(null)} className="flex-1 bg-slate-700 text-white font-medium py-3 rounded-xl">Cancel</button>
+          <button onClick={savePlanEdit} disabled={!valid} className="flex-1 bg-indigo-600 text-white font-bold py-3 rounded-xl disabled:opacity-50">Save plan</button>
+        </div>
+      </SheetShell>
+    );
+  };
+
+  const renderResultsEditor = () => {
+    if (!resultsEdit) return null;
+    const rows = resultsEdit.rows;
+    const totalIn = round2(rows.reduce((s, r) => s + (Number(r.buyIn) || 0), 0));
+    const totalOut = round2(rows.reduce((s, r) => s + (Number(r.cashOut) || 0), 0));
+    const diff = round2(totalOut - totalIn);
+    const balanced = Math.abs(diff) <= 0.01;
+    return (
+      <SheetShell title="Edit results" subtitle="Fix a buy-in or cash-out. The settlement plan is rebuilt." onClose={() => setResultsEdit(null)}>
+        <div className="space-y-3 mb-3">
+          {rows.map((r, idx) => {
+            const net = round2((Number(r.cashOut) || 0) - (Number(r.buyIn) || 0));
+            return (
+              <div key={r.name} className="bg-slate-900/50 border border-slate-700 rounded-xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-semibold text-slate-100 truncate">{r.name}</span>
+                  <span className={`font-bold ${toneOf(net) === 'pos' ? 'text-emerald-400' : toneOf(net) === 'neg' ? 'text-rose-400' : 'text-slate-400'}`}>{formatSigned(net)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Bought in ({currencySymbol()})</span>
+                    <input type="number" inputMode="decimal" min="0" value={r.buyIn} onChange={(e) => setResultRow(idx, { buyIn: e.target.value })} className={INPUT_CLS} />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Cashed out ({currencySymbol()})</span>
+                    <input type="number" inputMode="decimal" min="0" value={r.cashOut} onChange={(e) => setResultRow(idx, { cashOut: e.target.value })} className={INPUT_CLS} />
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className={`rounded-xl p-3 mb-4 text-sm font-medium ${balanced ? 'bg-emerald-900/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-900/20 text-rose-400 border border-rose-500/30'}`}>
+          {balanced ? `Balanced: ${formatCurrency(totalIn)} in, ${formatCurrency(totalOut)} out` : `Cash-outs are ${formatCurrency(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than buy-ins. Fix this to save.`}
+        </div>
+        <div className="flex gap-3">
+          <button onClick={() => setResultsEdit(null)} className="flex-1 bg-slate-700 text-white font-medium py-3 rounded-xl">Cancel</button>
+          <button onClick={requestSaveResults} disabled={!balanced} className="flex-1 bg-indigo-600 text-white font-bold py-3 rounded-xl disabled:opacity-50">Save results</button>
+        </div>
+      </SheetShell>
+    );
+  };
+
+  const renderPaymentSheet = () => {
+    if (!paymentSheet) return null;
+    const names = masterLedger.map(p => p.name);
+    const amt = Number(paymentSheet.amount);
+    const valid = paymentSheet.from && paymentSheet.to && paymentSheet.from !== paymentSheet.to && amt > 0;
+    return (
+      <SheetShell title="Log a past payment" subtitle="For money that has already been paid, including part-payments. Balances update right away." onClose={() => setPaymentSheet(null)}>
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Paid by</span>
+            <select value={paymentSheet.from} onChange={(e) => setPaymentSheet(prev => ({ ...prev, from: e.target.value }))} className={INPUT_CLS}>
+              <option value="">Choose...</option>
+              {names.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Paid to</span>
+            <select value={paymentSheet.to} onChange={(e) => setPaymentSheet(prev => ({ ...prev, to: e.target.value }))} className={INPUT_CLS}>
+              <option value="">Choose...</option>
+              {names.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+        </div>
+        <label className="block mb-4">
+          <span className="block text-[11px] uppercase tracking-wide text-slate-500 mb-1">Amount ({currencySymbol()})</span>
+          <input type="number" inputMode="decimal" min="0" value={paymentSheet.amount} onChange={(e) => setPaymentSheet(prev => ({ ...prev, amount: e.target.value }))} className={INPUT_CLS} />
+        </label>
+        <div className="flex gap-3">
+          <button onClick={() => setPaymentSheet(null)} className="flex-1 bg-slate-700 text-white font-medium py-3 rounded-xl">Cancel</button>
+          <button onClick={savePayment} disabled={!valid} className="flex-1 bg-indigo-600 text-white font-bold py-3 rounded-xl disabled:opacity-50">Log payment</button>
+        </div>
+      </SheetShell>
+    );
+  };
+
+  const renderSettings = () => {
+    if (!settingsOpen) return null;
+    return (
+      <SheetShell title="Settings & backup" subtitle="Everything is stored on this device only." onClose={() => setSettingsOpen(false)}>
+        <div className="space-y-5">
+          <label className="block">
+            <span className="block text-xs uppercase tracking-wide text-slate-500 mb-1">Currency</span>
+            <select value={currency} onChange={(e) => changeCurrency(e.target.value)} className={INPUT_CLS}>
+              {CURRENCIES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-xs uppercase tracking-wide text-slate-500 mb-1">Round settlement debts down to</span>
+            <select value={roundTo} onChange={(e) => changeRound(Number(e.target.value))} className={INPUT_CLS}>
+              {ROUND_OPTIONS.map(([val, label]) => <option key={val} value={val}>{label}</option>)}
+            </select>
+            <span className="block text-xs text-slate-500 mt-1">Applies to suggested plans. You can still edit any plan by hand.</span>
+          </label>
+          <label className="flex items-center justify-between bg-slate-900/50 border border-slate-700 rounded-xl p-3 cursor-pointer">
+            <span className="text-slate-200 text-sm font-medium">Keep screen awake during a session</span>
+            <input type="checkbox" checked={keepAwake} onChange={(e) => changeKeepAwake(e.target.checked)} className="h-5 w-5" />
+          </label>
+
+          <div>
+            <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Back up your data</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => exportNow('json')} className="h-11 bg-indigo-600 text-white font-bold rounded-xl text-sm flex items-center justify-center">Backup (JSON)</button>
+              <button onClick={() => exportNow('csv')} className="h-11 bg-slate-700 text-slate-100 font-semibold rounded-xl text-sm flex items-center justify-center">Games (CSV)</button>
+            </div>
+            {backupText && (
+              <textarea readOnly value={backupText} onFocus={(e) => e.target.select()} className="w-full h-24 mt-2 bg-slate-900 border border-slate-600 rounded-xl p-2 text-xs text-slate-300" />
+            )}
+          </div>
+
+          <div>
+            <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Restore from a backup</div>
+            <input type="file" accept=".json,application/json" onChange={(e) => {
+              const f = e.target.files && e.target.files[0];
+              if (!f) return;
+              const reader = new FileReader();
+              reader.onload = () => setRestoreText(String(reader.result || ''));
+              reader.readAsText(f);
+              e.target.value = '';
+            }} className="block w-full text-sm text-slate-400 mb-2" />
+            <textarea placeholder="...or paste backup text here" value={restoreText} onChange={(e) => setRestoreText(e.target.value)} className="w-full h-24 bg-slate-900 border border-slate-600 rounded-xl p-2 text-xs text-slate-300" />
+            <button disabled={!restoreText.trim()} onClick={() => setConfirmModal({ title: 'Replace all data?', message: 'This replaces your games, players and settlements with the backup.', confirmLabel: 'Restore', onConfirm: () => restoreBackup(restoreText) })} className="w-full h-11 mt-2 bg-slate-700 text-slate-100 font-semibold rounded-xl text-sm disabled:opacity-40">Restore backup</button>
+          </div>
+        </div>
+      </SheetShell>
+    );
   };
 
   // --- Views ---
@@ -781,7 +1382,7 @@ export default function App() {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="block text-xs text-slate-400 mb-1">Buy-in value ($)</span>
+            <span className="block text-xs text-slate-400 mb-1">Buy-in value ({currencySymbol()})</span>
             <input 
               type="number" 
               inputMode="decimal"
@@ -796,7 +1397,7 @@ export default function App() {
             />
           </label>
           <label className="block">
-            <span className="block text-xs text-slate-400 mb-1">Chips per $1</span>
+            <span className="block text-xs text-slate-400 mb-1">Chips per {currencySymbol()}1</span>
             <input 
               type="number" 
               inputMode="decimal"
@@ -814,6 +1415,11 @@ export default function App() {
             />
           </label>
         </div>
+      </div>
+
+      <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+        <span className="block text-xs text-slate-400 mb-1">Game notes</span>
+        <textarea rows={2} placeholder="Location, stakes, who hosted..." className="w-full bg-slate-900 border border-slate-600 rounded-xl py-2.5 px-3 text-white focus:outline-none focus:border-indigo-500" value={sessionNotes} onChange={(e) => setSessionNotes(e.target.value)} />
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -1037,7 +1643,11 @@ export default function App() {
             )}
           </div>
           
-          <div className="p-5 border-t border-slate-700 bg-slate-900/30 flex justify-end">
+          <div className="p-5 border-t border-slate-700 bg-slate-900/30 flex flex-col gap-3">
+            {calculatedPayouts.length > 0 && (
+              <button onClick={() => doShare('StackSettler settlement', buildSettlementText('StackSettler settlement', calculatedPayouts))} className="w-full h-11 bg-slate-700 text-slate-100 font-semibold rounded-xl flex items-center justify-center text-sm"><Share2 size={16} className="mr-2" /> Share plan</button>
+            )}
+            <button onClick={openSessionPlanEditor} className="w-full h-11 bg-slate-700 text-slate-100 font-semibold rounded-xl flex items-center justify-center text-sm"><Pencil size={16} className="mr-2" /> Edit who pays who</button>
             <button 
               onClick={handleSaveSession}
               className="w-full justify-center bg-indigo-600 active:bg-indigo-700 text-white font-bold py-3.5 rounded-xl flex items-center transition-colors"
@@ -1081,7 +1691,7 @@ export default function App() {
             <h3 className="text-xl font-bold text-white mb-4">Custom Amount</h3>
             <form onSubmit={submitCustomBuyIn}>
               <div className="mb-6">
-                <label className="block text-sm font-medium text-slate-400 mb-2">Dollar Amount ($)</label>
+                <label className="block text-sm font-medium text-slate-400 mb-2">Amount ({currencySymbol()})</label>
                 <input 
                   autoFocus
                   type="number" 
@@ -1178,6 +1788,7 @@ export default function App() {
                     {dur !== null && (<><span className="mx-3">•</span><span className="flex items-center"><Clock size={13} className="mr-1" />{formatDuration(dur)}</span></>)}
                   </div>
                   {top && top.net > EPS && <div className="text-xs text-emerald-400 mt-1.5">Top: {top.name} {formatSigned(top.net)}</div>}
+                  {(() => { const st = gameSettleStatus(game); if (!st.total) return null; return <div className={`text-xs mt-1 ${st.paid === st.total ? 'text-emerald-400' : 'text-slate-500'}`}>{st.paid === st.total ? 'Settled' : `${st.paid} of ${st.total} settled`}</div>; })()}
                 </div>
                 <div className="flex items-center text-indigo-400 font-medium">View <ChevronRight size={18} className="ml-1" /></div>
               </div>
@@ -1356,12 +1967,18 @@ export default function App() {
       <div className="max-w-4xl mx-auto animation-fade-in space-y-6">
         <div>
           <h2 className="text-2xl font-bold text-white">Player Rankings</h2>
-          <p className="text-sm text-slate-500 mt-1">Ranked across all saved games. Tap a player for full stats.</p>
+          <p className="text-sm text-slate-500 mt-1">{rankPeriod === 'all' ? 'Ranked across all saved games.' : 'Ranked for the selected period.'} Tap a player for full stats.</p>
         </div>
 
         <div className="flex gap-2 overflow-x-auto pb-1">
           {RANK_METRICS.map(m => (
             <button key={m.key} onClick={() => setRankMetric(m.key)} className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap border transition-colors ${rankMetric === m.key ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}>{m.label}</button>
+          ))}
+        </div>
+
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {[['all', 'All time'], ['year', 'This year'], ['month', 'This month'], ['30d', 'Last 30 days']].map(([k, l]) => (
+            <button key={k} onClick={() => setRankPeriod(k)} className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border ${rankPeriod === k ? 'bg-slate-600 border-slate-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>{l}</button>
           ))}
         </div>
 
@@ -1408,25 +2025,58 @@ export default function App() {
     );
   };
 
-  const renderLedger = () => (
-    <div className="max-w-4xl mx-auto animation-fade-in space-y-6">
-      <div className="flex justify-between items-end mb-6"><div><h2 className="text-2xl font-bold text-white">Active Ledger & Dues</h2></div></div>
-      <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden flex flex-col">
+  const renderLedger = () => {
+    const owing = masterLedger.filter(p => Math.abs(p.net) > 0.009);
+    const planRows = customLedgerActive ? ledgerPlan.rows : masterPayouts;
+    return (
+    <div className="max-w-4xl mx-auto animation-fade-in space-y-4">
+      <div>
+        <h2 className="text-2xl font-bold text-white">Active Ledger & Dues</h2>
+        <p className="text-sm text-slate-500 mt-1">Combined across all games. Decide who pays whom, then mark payments as they happen.</p>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={openLedgerPlanEditor} className="flex-1 h-11 bg-indigo-600 text-white font-bold rounded-xl flex items-center justify-center text-sm"><Pencil size={16} className="mr-1.5" /> Edit who pays who</button>
+        <button onClick={() => doShare('StackSettler dues', buildSettlementText('StackSettler dues', planRows))} disabled={planRows.length === 0} className="h-11 px-4 bg-slate-800 border border-slate-700 text-slate-200 rounded-xl flex items-center text-sm font-semibold disabled:opacity-40"><Share2 size={16} className="mr-1.5" /> Share</button>
+      </div>
+
+      {owing.length > 0 && (
+        <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+          <div className="p-4 border-b border-slate-700"><h3 className="text-white font-bold">Balances</h3></div>
+          <div className="divide-y divide-slate-700/60">
+            {owing.map(p => (
+              <div key={p.name} className="flex items-center justify-between p-4">
+                <span className="font-semibold text-slate-100">{p.name}</span>
+                <span className={`font-bold ${p.net > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{p.net > 0 ? 'is owed ' : 'owes '}{formatCurrency(Math.abs(p.net))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-xl overflow-hidden flex flex-col">
+        <div className="p-4 border-b border-slate-700 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-white font-bold">{customLedgerActive ? 'Your plan' : 'Suggested payments'}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{customLedgerActive ? 'You changed who pays whom.' : (roundTo > 0 ? `Debts are rounded down to the nearest ${roundTo}. Change this in Settings.` : 'Exact amounts, no rounding.')}</p>
+          </div>
+          {customLedgerActive && <button onClick={() => setLedgerPlan(null)} className="text-indigo-400 text-xs font-semibold shrink-0 mt-0.5">Reset to suggested</button>}
+        </div>
         <div className="p-4 overflow-y-auto bg-slate-900/20">
-          {masterPayouts.length === 0 ? (
-            <div className="text-center py-12"><h3 className="text-lg font-medium text-white mb-2">All settled up!</h3></div>
+          {planRows.length === 0 ? (
+            <div className="text-center py-10"><h3 className="text-lg font-medium text-white mb-2">All settled up!</h3></div>
           ) : (
-            <div className="space-y-4">
-              {masterPayouts.map((tx, idx) => (
-                <div key={idx} className="flex flex-col gap-3 justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50">
-                  <div className="flex items-center space-x-4">
+            <div className="space-y-3">
+              {planRows.map((tx, idx) => (
+                <div key={tx.id || idx} className="flex flex-col gap-3 justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50">
+                  <div className="flex items-center space-x-3">
                     <span className="font-semibold text-rose-400 text-lg">{tx.from}</span>
                     <ArrowRight className="text-slate-400" size={16} />
                     <span className="font-semibold text-emerald-400 text-lg">{tx.to}</span>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <div className="text-2xl font-black text-white">{formatCurrency(tx.amount)}</div>
-                    <button onClick={() => handleSettlePayment(tx.from, tx.to, tx.amount)} className="bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 px-4 py-2.5 rounded-lg text-sm font-medium flex items-center">Mark Settled</button>
+                  <div className="flex items-center gap-3">
+                    <div className="text-2xl font-black text-white flex-1">{formatCurrency(tx.amount)}</div>
+                    <button onClick={openLedgerPlanEditor} className="h-10 w-10 flex items-center justify-center bg-slate-700 text-slate-200 rounded-lg" aria-label="Change who pays who"><Pencil size={16} /></button>
+                    <button onClick={() => settleLedgerRow(tx)} className="bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 px-4 h-10 rounded-lg text-sm font-medium flex items-center">Mark Settled</button>
                   </div>
                 </div>
               ))}
@@ -1434,27 +2084,37 @@ export default function App() {
           )}
         </div>
       </div>
+
+      <button onClick={() => openPaymentSheet()} className="w-full text-slate-400 text-sm py-2 flex items-center justify-center">Log a payment that was already made <ChevronRight size={16} className="ml-1" /></button>
     </div>
-  );
+    );
+  };
 
   const renderArchive = () => (
-    <div className="max-w-4xl mx-auto animation-fade-in space-y-6">
-      <div className="flex justify-between items-end mb-6"><div><h2 className="text-2xl font-bold text-white">Settlement Archive</h2></div></div>
+    <div className="max-w-4xl mx-auto animation-fade-in space-y-4">
+      <div><h2 className="text-2xl font-bold text-white">Settlement Archive</h2><p className="text-sm text-slate-500 mt-1">Tap the arrow to undo a payment.</p></div>
       <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden flex flex-col">
         <div className="p-4 overflow-y-auto bg-slate-900/20">
-          {settlements.map((tx) => (
-            <div key={tx.id} className="flex items-center justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50 mb-4">
-              <div className="flex items-center space-x-3">
-                <span className="font-semibold text-rose-400">{tx.from}</span>
-                <ArrowRight className="text-slate-500" size={14} />
-                <span className="font-semibold text-emerald-400">{tx.to}</span>
+          {settlements.length === 0 && <p className="text-center text-slate-500 text-sm py-8">No payments recorded yet.</p>}
+          {settlements.map((tx) => {
+            const sg = tx.gameId ? gamesHistory.find(x => x.id === tx.gameId) : null;
+            return (
+              <div key={tx.id} className="flex items-center justify-between p-4 bg-slate-900/60 rounded-xl border border-slate-700/50 mb-3">
+                <div className="min-w-0">
+                  <div className="flex items-center space-x-3">
+                    <span className="font-semibold text-rose-400">{tx.from}</span>
+                    <ArrowRight className="text-slate-500" size={14} />
+                    <span className="font-semibold text-emerald-400">{tx.to}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">{formatDate(tx.date)}{sg ? ` · from game ${formatDate(sg.date).split(',')[0]}` : ''}</div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="font-bold text-slate-200">{formatCurrency(tx.amount)}</div>
+                  <button onClick={() => handleDeleteSettlement(tx.id)} className="text-slate-500 hover:text-rose-400 p-1.5 bg-slate-800 rounded transition-colors"><RotateCcw size={16} /></button>
+                </div>
               </div>
-              <div className="flex items-center gap-4">
-                <div className="font-bold text-slate-200">{formatCurrency(tx.amount)}</div>
-                <button onClick={() => handleDeleteSettlement(tx.id)} className="text-slate-500 hover:text-rose-400 p-1.5 bg-slate-800 rounded transition-colors"><RotateCcw size={16} /></button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -1469,6 +2129,7 @@ export default function App() {
     const duration = typeof g.durationMinutes === 'number' ? g.durationMinutes : null;
     const logs = g.logs || [];
     const payouts = g.payouts || [];
+    const settleStatus = gameSettleStatus(g);
     const medalColors = ['text-amber-400', 'text-slate-300', 'text-orange-400'];
 
     return (
@@ -1498,7 +2159,7 @@ export default function App() {
         </div>
 
         <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
-          <div className="p-5 border-b border-slate-700"><h3 className="text-white font-bold">Results</h3></div>
+          <div className="p-5 border-b border-slate-700 flex items-center justify-between"><h3 className="text-white font-bold">Results</h3><button onClick={() => openResultsEditor(g)} className="h-9 px-3 rounded-lg bg-slate-700 text-slate-200 text-xs font-semibold flex items-center"><Pencil size={14} className="mr-1" /> Edit</button></div>
           <div className="divide-y divide-slate-700/60">
             {rows.map((r, i) => (
               <div key={r.p.id || r.p.name} onClick={() => { setSelectedPlayer(masterLedger.find(x => x.name === r.p.name) || { name: r.p.name }); setStatsBackTab('details'); setActiveTab('playerStats'); }} className="flex items-center gap-4 p-4 hover:bg-slate-700/30 cursor-pointer transition-colors">
@@ -1516,25 +2177,71 @@ export default function App() {
         </div>
 
         <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
-          <div className="p-5 border-b border-slate-700"><h3 className="text-white font-bold flex items-center"><CheckCircle2 size={18} className="mr-2 text-emerald-400" /> Settlement plan</h3></div>
+          <div className="p-5 border-b border-slate-700 flex items-center justify-between gap-2">
+            <h3 className="text-white font-bold flex items-center"><CheckCircle2 size={18} className="mr-2 text-emerald-400" /> Settlement plan</h3>
+            <div className="flex items-center gap-2">
+              <button onClick={() => doShare(`StackSettler ${formatDate(g.date)}`, buildSettlementText(`StackSettler · ${formatDate(g.date)}`, payouts, payouts.map((tx, i) => ['paid', 'ledger'].includes(rowState(g, i).state))))} className="h-9 px-3 rounded-lg bg-slate-700 text-slate-200 text-xs font-semibold flex items-center"><Share2 size={14} className="mr-1" /> Share</button>
+              <button onClick={() => openPlanEditor(g)} className="h-9 px-3 rounded-lg bg-slate-700 text-slate-200 text-xs font-semibold flex items-center"><Pencil size={14} className="mr-1" /> Edit</button>
+            </div>
+          </div>
           <div className="p-5">
+            {ledgerSettled && payouts.length > 0 && (
+              <div className="mb-3 rounded-xl bg-emerald-900/20 border border-emerald-500/30 text-emerald-400 text-sm font-semibold px-3 py-2.5 flex items-center"><CheckCircle2 size={16} className="mr-2 shrink-0" /> All settled up. The Ledger shows no dues.</div>
+            )}
+            <p className="text-xs text-slate-500 mb-3">Payments already covered by the Ledger show as Settled. Tap Edit to change who pays whom.</p>
             {payouts.length === 0 ? (
               <p className="text-slate-400 text-sm text-center py-2">Everyone broke even. No payouts needed.</p>
             ) : (
-              <div className="space-y-3">
-                {payouts.map((tx, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
-                    <div className="flex items-center space-x-3 min-w-0">
-                      <span className="font-semibold text-rose-400 truncate">{tx.from}</span>
-                      <ArrowRight className="text-slate-500 shrink-0" size={16} />
-                      <span className="font-semibold text-emerald-400 truncate">{tx.to}</span>
-                    </div>
-                    <div className="text-lg font-bold text-white">{formatCurrency(tx.amount)}</div>
-                  </div>
-                ))}
-              </div>
+              <>
+                <div className="space-y-3">
+                  {payouts.map((tx, idx) => {
+                    const pid = gamePayoutId(tx, idx);
+                    const rs = rowState(g, idx);
+                    const done = rs.state === 'paid' || rs.state === 'ledger';
+                    return (
+                      <div key={pid} className={`p-4 bg-slate-900/50 rounded-lg border ${done ? 'border-emerald-500/30' : rs.state === 'partial' ? 'border-amber-500/30' : 'border-slate-700/50'}`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2 min-w-0">
+                            <span className="font-semibold text-rose-400 truncate">{tx.from}</span>
+                            <ArrowRight className="text-slate-500 shrink-0" size={16} />
+                            <span className="font-semibold text-emerald-400 truncate">{tx.to}</span>
+                          </div>
+                          <div className={`text-lg font-bold shrink-0 ml-2 ${done ? 'text-slate-500 line-through' : 'text-white'}`}>{formatCurrency(tx.amount)}</div>
+                        </div>
+                        <div className="mt-3">
+                          {rs.state === 'paid' ? (
+                            <button onClick={() => toggleGamePayout(g, tx, idx)} className="w-full h-10 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 text-sm font-semibold flex items-center justify-center"><Check size={16} className="mr-1.5" /> Paid · tap to undo</button>
+                          ) : rs.state === 'ledger' ? (
+                            <div className="w-full h-10 rounded-xl bg-emerald-600/10 text-emerald-400 border border-emerald-500/20 text-sm font-semibold flex items-center justify-center"><Check size={16} className="mr-1.5" /> Settled in the Ledger</div>
+                          ) : rs.state === 'partial' ? (
+                            <div>
+                              <div className="text-xs text-amber-400 font-semibold mb-2">{formatCurrency(rs.settledAmt)} of {formatCurrency(tx.amount)} already settled</div>
+                              <button onClick={() => markRestPaid(g, tx, idx, tx.amount - rs.settledAmt)} className="w-full h-10 rounded-xl bg-indigo-600 text-white text-sm font-bold">Mark rest paid ({formatCurrency(tx.amount - rs.settledAmt)})</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => toggleGamePayout(g, tx, idx)} className="w-full h-10 rounded-xl bg-indigo-600 text-white text-sm font-bold">Mark paid</button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between mt-4 text-sm">
+                  <span className={settleStatus.paid === settleStatus.total ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>{settleStatus.paid === settleStatus.total ? 'All settled up' : `${settleStatus.paid} of ${settleStatus.total} settled`}</span>
+                  {settleStatus.paid < settleStatus.total ? (
+                    <button onClick={() => settleAllGamePayouts(g)} className="text-indigo-400 font-semibold">Mark all paid</button>
+                  ) : settlements.some(x => x.gameId === g.id) ? (
+                    <button onClick={() => undoAllGamePayouts(g)} className="text-slate-400 font-semibold">Undo paid marks</button>
+                  ) : null}
+                </div>
+              </>
             )}
           </div>
+        </div>
+
+        <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5">
+          <h3 className="text-white font-bold mb-2">Notes</h3>
+          <textarea rows={3} placeholder="Location, stakes, who hosted..." className="w-full bg-slate-900 border border-slate-600 rounded-xl py-3 px-3 text-white focus:outline-none focus:border-indigo-500" value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} onBlur={() => { if ((g.notes || '') !== noteDraft.trim()) updateGame({ ...g, notes: noteDraft.trim() }); }} />
         </div>
 
         {logs.length > 0 && (
@@ -1729,8 +2436,8 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end" onClick={() => setMoreOpen(false)}>
           <div className="bg-slate-800 border-t border-slate-700 rounded-t-3xl w-full max-w-xl mx-auto p-4 sheet" onClick={(e) => e.stopPropagation()}>
             <div className="w-10 h-1 bg-slate-600 rounded-full mx-auto mb-4" />
-            {[{ key: 'ledger', label: 'Ledger', Icon: Scale }, { key: 'archive', label: 'Archive', Icon: Archive }].map(({ key, label, Icon }) => (
-              <button key={key} onClick={() => { setMoreOpen(false); setActiveTab(key); }} className="w-full flex items-center p-4 rounded-xl active:bg-slate-700/60 text-left">
+            {[{ key: 'ledger', label: 'Ledger', Icon: Scale }, { key: 'archive', label: 'Archive', Icon: Archive }, { key: 'settings', label: 'Settings & backup', Icon: Settings }].map(({ key, label, Icon }) => (
+              <button key={key} onClick={() => { setMoreOpen(false); if (key === 'settings') setSettingsOpen(true); else setActiveTab(key); }} className="w-full flex items-center p-4 rounded-xl active:bg-slate-700/60 text-left">
                 <Icon size={22} className="text-indigo-400 mr-4" />
                 <span className="flex-1 text-white font-medium">{label}</span>
                 <ChevronRight size={18} className="text-slate-500" />
@@ -1738,6 +2445,15 @@ export default function App() {
             ))}
           </div>
         </div>
+      )}
+
+      {renderPlanEditor()}
+      {renderResultsEditor()}
+      {renderPaymentSheet()}
+      {renderSettings()}
+
+      {toast && (
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] bg-white text-[#1a1b24] font-semibold text-sm px-4 py-2.5 rounded-full shadow-xl max-w-[90vw] text-center">{toast}</div>
       )}
 
       {confirmModal && (
