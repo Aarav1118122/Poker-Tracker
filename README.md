@@ -24,6 +24,14 @@ All data is stored locally on the device (browser localStorage). No account or i
     npm run cap:sync
     npm run cap:open
 
+## Moving your data from an older app version
+This build has a new app ID, so it installs NEXT TO the old app instead of replacing it. Nothing is lost.
+1. In the OLD app: More > Settings & backup > Backup (JSON). Copy the text (or save the file).
+2. In the NEW app: More > Settings & backup > Restore, choose the file or paste the text, then Restore.
+3. Check your games, then uninstall the old app.
+Apps cannot read each other's data, so the backup text is how it moves across.
+If the old app has no Settings & backup page, it can't export; see the notes in the chat for options.
+
 ## Updating the app without losing data
 The workflow signs every build with the same key (`signing/debug.keystore`), so a new APK installs
 over the old one and keeps your games. Make sure the `signing` folder is uploaded to GitHub too.

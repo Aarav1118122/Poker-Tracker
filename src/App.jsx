@@ -70,13 +70,15 @@ const computeGameSettlementStates = (games, settlements) => {
       rem[g.id][p.name] = { debt, credit, debt0: debt, credit0: credit };
     });
   });
-  const clear = (name, amount, kind, onlyGameId) => {
+  const used = {};
+  const clear = (name, amount, kind, onlyGameId, sid) => {
     let left = amount;
     const ids = onlyGameId ? [onlyGameId] : ordered.map(g => g.id);
     ids.forEach(id => {
       const r = rem[id] && rem[id][name];
       if (!r || left <= 0.0001) return;
       const take = Math.min(left, r[kind]);
+      if (take > 0.0001) { const key = `${id}|${name}|${kind}`; (used[key] = used[key] || []).push(sid); }
       r[kind] -= take;
       left -= take;
     });
@@ -84,8 +86,8 @@ const computeGameSettlementStates = (games, settlements) => {
   const sorted = [...settlements].sort((a, b) => ((a.gameId ? 0 : 1) - (b.gameId ? 0 : 1)) || (new Date(a.date) - new Date(b.date)));
   sorted.forEach(st => {
     const only = st.gameId && rem[st.gameId] ? st.gameId : null;
-    clear(st.from, st.amount, 'debt', only);
-    clear(st.to, st.amount, 'credit', only);
+    clear(st.from, st.amount, 'debt', only, st.id);
+    clear(st.to, st.amount, 'credit', only, st.id);
   });
   const out = {};
   ordered.forEach(g => {
@@ -95,6 +97,7 @@ const computeGameSettlementStates = (games, settlements) => {
       debtPool[name] = Math.max(0, r.debt0 - r.debt);
       creditPool[name] = Math.max(0, r.credit0 - r.credit);
     });
+    const taggedHere = new Set(settlements.filter(x => x.gameId === g.id).map(x => x.id));
     out[g.id] = (g.payouts || []).map((tx, idx) => {
       const pid = gamePayoutId(tx, idx);
       const tagged = settlements.some(s => s.gameId === g.id && s.payoutId === pid);
@@ -103,12 +106,13 @@ const computeGameSettlementStates = (games, settlements) => {
       if (tagged) {
         debtPool[tx.from] = payer - Math.min(a, payer);
         creditPool[tx.to] = recv - Math.min(a, recv);
-        return { state: 'paid', settledAmt: a };
+        return { state: 'paid', settledAmt: a, sources: [] };
       }
       const cover = Math.min(a, payer, recv);
       debtPool[tx.from] = payer - cover;
       creditPool[tx.to] = recv - cover;
-      return { state: cover >= a - 0.01 ? 'ledger' : cover > 0.01 ? 'partial' : 'open', settledAmt: cover };
+      const sources = [...(used[`${g.id}|${tx.from}|debt`] || []), ...(used[`${g.id}|${tx.to}|credit`] || [])].filter((id, i, arr) => arr.indexOf(id) === i && !taggedHere.has(id));
+      return { state: cover >= a - 0.01 ? 'ledger' : cover > 0.01 ? 'partial' : 'open', settledAmt: cover, sources };
     });
   });
   return out;
@@ -1023,7 +1027,7 @@ export default function App() {
   const rowState = (game, idx) => {
     const st = (gameStates[game.id] || [])[idx] || { state: 'open', settledAmt: 0 };
     const tx = (game.payouts || [])[idx];
-    if (ledgerSettled && st.state !== 'paid' && tx) return { state: 'ledger', settledAmt: tx.amount };
+    if (ledgerSettled && st.state !== 'paid' && tx) return { state: 'ledger', settledAmt: tx.amount, sources: st.sources || [] };
     return st;
   };
   const gameSettleStatus = (game) => {
@@ -1067,6 +1071,12 @@ export default function App() {
       else if (rs.state === 'partial') add.push({ id: generateId(), date: new Date().toISOString(), from: tx.from, to: tx.to, amount: round2(tx.amount - rs.settledAmt), gameId: game.id, payoutId: pid });
     });
     if (add.length) confirmPayments(add, () => persistSettlements([...add, ...settlements]));
+  };
+  const undoCover = (ids) => {
+    const list = settlements.filter(x => ids.includes(x.id));
+    if (!list.length) return;
+    const lines = list.map(x => `${x.from} paid ${x.to} ${formatCurrency(x.amount)}`).join(', ');
+    setConfirmModal({ title: 'Undo these payments?', message: `${lines}. They are also removed from the Ledger and Archive.`, confirmLabel: 'Undo', onConfirm: () => persistSettlements(settlements.filter(x => !ids.includes(x.id))) });
   };
   const markRestPaid = (game, tx, idx, rest) => {
     const pid = gamePayoutId(tx, idx);
@@ -2130,6 +2140,7 @@ export default function App() {
     const logs = g.logs || [];
     const payouts = g.payouts || [];
     const settleStatus = gameSettleStatus(g);
+    const undoIds = Array.from(new Set([...settlements.filter(x => x.gameId === g.id).map(x => x.id), ...payouts.flatMap((tx, i) => rowState(g, i).sources || [])]));
     const medalColors = ['text-amber-400', 'text-slate-300', 'text-orange-400'];
 
     return (
@@ -2212,10 +2223,18 @@ export default function App() {
                           {rs.state === 'paid' ? (
                             <button onClick={() => toggleGamePayout(g, tx, idx)} className="w-full h-10 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 text-sm font-semibold flex items-center justify-center"><Check size={16} className="mr-1.5" /> Paid · tap to undo</button>
                           ) : rs.state === 'ledger' ? (
-                            <div className="w-full h-10 rounded-xl bg-emerald-600/10 text-emerald-400 border border-emerald-500/20 text-sm font-semibold flex items-center justify-center"><Check size={16} className="mr-1.5" /> Settled in the Ledger</div>
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-10 rounded-xl bg-emerald-600/10 text-emerald-400 border border-emerald-500/20 text-sm font-semibold flex items-center justify-center"><Check size={16} className="mr-1.5" /> Settled in the Ledger</div>
+                              {rs.sources && rs.sources.length > 0 && (
+                                <button onClick={() => undoCover(rs.sources)} className="h-10 px-4 rounded-xl bg-slate-700 text-slate-200 text-sm font-semibold">Undo</button>
+                              )}
+                            </div>
                           ) : rs.state === 'partial' ? (
                             <div>
-                              <div className="text-xs text-amber-400 font-semibold mb-2">{formatCurrency(rs.settledAmt)} of {formatCurrency(tx.amount)} already settled</div>
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-xs text-amber-400 font-semibold">{formatCurrency(rs.settledAmt)} of {formatCurrency(tx.amount)} already settled</div>
+                                {rs.sources && rs.sources.length > 0 && <button onClick={() => undoCover(rs.sources)} className="text-xs text-slate-300 font-semibold underline">Undo</button>}
+                              </div>
                               <button onClick={() => markRestPaid(g, tx, idx, tx.amount - rs.settledAmt)} className="w-full h-10 rounded-xl bg-indigo-600 text-white text-sm font-bold">Mark rest paid ({formatCurrency(tx.amount - rs.settledAmt)})</button>
                             </div>
                           ) : (
@@ -2228,11 +2247,10 @@ export default function App() {
                 </div>
                 <div className="flex items-center justify-between mt-4 text-sm">
                   <span className={settleStatus.paid === settleStatus.total ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>{settleStatus.paid === settleStatus.total ? 'All settled up' : `${settleStatus.paid} of ${settleStatus.total} settled`}</span>
-                  {settleStatus.paid < settleStatus.total ? (
-                    <button onClick={() => settleAllGamePayouts(g)} className="text-indigo-400 font-semibold">Mark all paid</button>
-                  ) : settlements.some(x => x.gameId === g.id) ? (
-                    <button onClick={() => undoAllGamePayouts(g)} className="text-slate-400 font-semibold">Undo paid marks</button>
-                  ) : null}
+                  <div className="flex items-center gap-4">
+                    {undoIds.length > 0 && <button onClick={() => undoCover(undoIds)} className="text-slate-300 font-semibold">Undo payments</button>}
+                    {settleStatus.paid < settleStatus.total && <button onClick={() => settleAllGamePayouts(g)} className="text-indigo-400 font-semibold">Mark all paid</button>}
+                  </div>
                 </div>
               </>
             )}
@@ -2293,6 +2311,16 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {totalGames === 0 && roster.length === 0 && !isSessionActive && (
+          <button onClick={() => setSettingsOpen(true)} className="w-full bg-slate-800 border border-slate-700 rounded-3xl p-4 flex items-center justify-between text-left">
+            <div>
+              <div className="text-white font-bold">Moving from another version?</div>
+              <div className="text-sm text-slate-400">Import your backup in Settings & backup.</div>
+            </div>
+            <ChevronRight size={20} className="text-slate-500 shrink-0" />
+          </button>
+        )}
 
         {isSessionActive ? (
           <div className="bg-[#86e39a] text-[#10331b] rounded-3xl p-5">
@@ -2355,13 +2383,13 @@ export default function App() {
 
         {newGameModal.isOpen && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
-            <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl p-6 w-full sm:max-w-md max-h-[90vh] overflow-y-auto sheet">
-              <div className="flex justify-between mb-4"><h3 className="text-xl font-bold text-white">Select Players</h3><button onClick={() => setNewGameModal({isOpen: false, selectedPlayerIds: []})} className="text-slate-400"><X size={20} /></button></div>
-              <form onSubmit={handleAddPlayerFromModal} className="flex gap-2 mb-4">
+            <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl p-6 w-full sm:max-w-md tall-sheet sheet">
+              <div className="flex justify-between mb-4 shrink-0"><h3 className="text-xl font-bold text-white">Select Players</h3><button onClick={() => setNewGameModal({isOpen: false, selectedPlayerIds: []})} className="text-slate-400"><X size={20} /></button></div>
+              <form onSubmit={handleAddPlayerFromModal} className="flex gap-2 mb-4 shrink-0">
                 <input type="text" placeholder="Add a new player..." className="flex-1 bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-3 text-white focus:outline-none focus:border-indigo-500" value={newGamePlayerInput} onChange={(e) => setNewGamePlayerInput(e.target.value)} />
                 <button type="submit" disabled={!newGamePlayerInput.trim()} className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 rounded-lg font-medium flex items-center"><Plus size={18} /></button>
               </form>
-              <div className="mb-6 bg-slate-900/50 border border-slate-700 p-2 rounded-lg max-h-64 overflow-y-auto">
+              <div className="mb-4 bg-slate-900/50 border border-slate-700 p-2 rounded-lg flex-1 min-h-0 overflow-y-auto">
                 {roster.length === 0 ? (
                   <p className="text-slate-500 text-sm text-center py-6">No players yet. Add your first player above.</p>
                 ) : roster.map(p => (
@@ -2374,7 +2402,7 @@ export default function App() {
                   </label>
                 ))}
               </div>
-              <button onClick={submitNewGame} disabled={newGameModal.selectedPlayerIds.length === 0} className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl">Start Game Session{newGameModal.selectedPlayerIds.length > 0 ? ` (${newGameModal.selectedPlayerIds.length} players)` : ''}</button>
+              <button onClick={submitNewGame} disabled={newGameModal.selectedPlayerIds.length === 0} className="w-full shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl">Start Game Session{newGameModal.selectedPlayerIds.length > 0 ? ` (${newGameModal.selectedPlayerIds.length} players)` : ''}</button>
             </div>
           </div>
         )}
