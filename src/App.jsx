@@ -1010,9 +1010,9 @@ export default function App() {
   };
   const restoreBackup = (text) => {
     let data;
-    const normalized = String(text || '').replace(/^\\uFEFF/, '').trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');
+    const normalized = String(text || '').replace(/^\uFEFF/, '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     try { data = JSON.parse(normalized); } catch (e) {
-      const match = String(e && e.message || '').match(/position (\\d+)/i);
+      const match = String(e && e.message || '').match(/position (\d+)/i);
       const position = match ? Number(match[1]) : null;
       showToast(`Backup is incomplete or invalid${position === null ? '' : ` near character ${position}`}. Upload the original .json backup file or copy the entire text again.`);
       return;
@@ -1037,7 +1037,7 @@ export default function App() {
   const rowState = (game, idx) => {
     const st = (gameStates[game.id] || [])[idx] || { state: 'open', settledAmt: 0 };
     const tx = (game.payouts || [])[idx];
-    if (ledgerSettled && st.state !== 'paid' && tx) return { state: 'ledger', settledAmt: tx.amount, sources: st.sources || [] };
+    if (ledgerSettled && !settlements.some(s => s.type === 'balance-clear') && st.state !== 'paid' && tx) return { state: 'ledger', settledAmt: tx.amount, sources: st.sources || [] };
     return st;
   };
   const gameSettleStatus = (game) => {
