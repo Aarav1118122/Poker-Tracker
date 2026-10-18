@@ -1060,7 +1060,7 @@ export default function App() {
 
   const buildBackup = () => JSON.stringify({
     app: 'StackSettler', version: 1, exportedAt: new Date().toISOString(),
-    games: gamesHistory, roster: roster, settlements: settlements,
+    games: gamesHistory, roster: roster, settlements: settlements, ledgerPlan: ledgerPlan,
     settings: { currency: activeCurrency, roundTo: settleRound, keepAwake: keepAwake }
   });
   const buildCsv = () => {
@@ -1106,6 +1106,7 @@ export default function App() {
     const r = Array.isArray(data.roster) ? data.roster : [];
     setRoster(r); saveRoster(r);
     persistSettlements(Array.isArray(data.settlements) ? data.settlements : []);
+    setLedgerPlan(data.ledgerPlan || null);
     if (data.settings) {
       if (data.settings.currency) changeCurrency(data.settings.currency);
       if (typeof data.settings.roundTo === 'number') changeRound(data.settings.roundTo);
