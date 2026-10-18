@@ -1098,7 +1098,24 @@ export default function App() {
   const openPlanEditor = (g) => setPlanEdit({ kind: 'game', gameId: g.id, rows: rowsFromPayouts(g.payouts) });
   const openLedgerPlanEditor = () => setPlanEdit({ kind: 'ledger', rows: rowsFromPayouts(customLedgerActive ? ledgerPlan.rows : masterPayouts) });
   const openSessionPlanEditor = () => setPlanEdit({ kind: 'session', rows: rowsFromPayouts(calculatedPayouts) });
-  const setPlanRow = (idx, patch) => setPlanEdit(prev => ({ ...prev, rows: prev.rows.map((r, i) => i === idx ? { ...r, ...patch } : r) }));
+  const setPlanRow = (idx, patch) => setPlanEdit(prev => {
+    const nextRows = prev.rows.map((r, i) => i === idx ? { ...r, ...patch } : r);
+    if (!('from' in patch) && !('to' in patch)) return { ...prev, rows: nextRows };
+    const anchor = nextRows[idx];
+    const amount = round2(Number(anchor.amount) || 0);
+    const balances = planContext(prev).nets.map(p => ({ name: p.name, net: Number(p.net) || 0 }));
+    if (!anchor.from || !anchor.to || anchor.from === anchor.to || amount <= 0) return { ...prev, rows: nextRows };
+    const payer = balances.find(p => p.name === anchor.from);
+    const receiver = balances.find(p => p.name === anchor.to);
+    if (!payer || !receiver) return { ...prev, rows: nextRows };
+    payer.net = round2(payer.net + amount);
+    receiver.net = round2(receiver.net - amount);
+    const remainder = calculateSimplifiedPayouts(balances).map(tx => {
+      const existing = prev.rows.find((r, i) => i !== idx && r.from === tx.from && r.to === tx.to && Math.abs((Number(r.amount) || 0) - tx.amount) < 0.005);
+      return { id: existing ? existing.id : generateId(), from: tx.from, to: tx.to, amount: String(tx.amount) };
+    });
+    return { ...prev, rows: [{ ...anchor, amount: String(amount) }, ...remainder] };
+  });
   const addPlanRow = () => setPlanEdit(prev => {
     const names = planContext(prev).names;
     return { ...prev, rows: [...prev.rows, { id: generateId(), from: names[0] || '', to: names[1] || '', amount: '' }] };
@@ -1168,13 +1185,13 @@ export default function App() {
   };
 
   // --- Record a custom payment ---
-  const openPaymentSheet = (init = {}) => setPaymentSheet({ from: init.from || '', to: init.to || '', amount: init.amount !== undefined ? String(init.amount) : '' });
+  const openPaymentSheet = (init = {}) => setPaymentSheet({ from: init.from || '', to: init.to || '', amount: init.amount !== undefined ? String(init.amount) : '', gameId: init.gameId || null });
   const savePayment = () => {
     const amt = round2(Number(paymentSheet.amount));
     if (!paymentSheet.from || !paymentSheet.to || paymentSheet.from === paymentSheet.to || !(amt > 0)) return;
     const pay = { from: paymentSheet.from, to: paymentSheet.to, amount: amt };
     setPaymentSheet(null);
-    confirmPayments([pay], () => { handleSettlePayment(pay.from, pay.to, pay.amount); showToast('Payment recorded'); });
+    confirmPayments([pay], () => { handleSettlePayment(pay.from, pay.to, pay.amount, paymentSheet.gameId ? { gameId: paymentSheet.gameId } : {}); showToast('Payment recorded'); });
   };
 
   // --- Sheets ---
@@ -2193,6 +2210,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button onClick={() => doShare(`StackSettler ${formatDate(g.date)}`, buildSettlementText(`StackSettler · ${formatDate(g.date)}`, payouts, payouts.map((tx, i) => ['paid', 'ledger'].includes(rowState(g, i).state))))} className="h-9 px-3 rounded-lg bg-slate-700 text-slate-200 text-xs font-semibold flex items-center"><Share2 size={14} className="mr-1" /> Share</button>
               <button onClick={() => openPlanEditor(g)} className="h-9 px-3 rounded-lg bg-slate-700 text-slate-200 text-xs font-semibold flex items-center"><Pencil size={14} className="mr-1" /> Edit</button>
+              <button onClick={() => openPaymentSheet({ gameId: g.id })} className="h-9 px-3 rounded-lg bg-emerald-900/40 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center"><CheckCircle2 size={14} className="mr-1" /> Log done payment</button>
             </div>
           </div>
           <div className="p-5">
@@ -2383,7 +2401,7 @@ export default function App() {
 
         {newGameModal.isOpen && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
-            <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl p-6 w-full sm:max-w-md tall-sheet sheet">
+            <div className="bg-slate-800 border border-slate-700 rounded-t-3xl sm:rounded-2xl p-5 sm:p-6 w-full sm:max-w-md tall-sheet sheet">
               <div className="flex justify-between mb-4 shrink-0"><h3 className="text-xl font-bold text-white">Select Players</h3><button onClick={() => setNewGameModal({isOpen: false, selectedPlayerIds: []})} className="text-slate-400"><X size={20} /></button></div>
               <form onSubmit={handleAddPlayerFromModal} className="flex gap-2 mb-4 shrink-0">
                 <input type="text" placeholder="Add a new player..." className="flex-1 bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-3 text-white focus:outline-none focus:border-indigo-500" value={newGamePlayerInput} onChange={(e) => setNewGamePlayerInput(e.target.value)} />
@@ -2402,7 +2420,7 @@ export default function App() {
                   </label>
                 ))}
               </div>
-              <button onClick={submitNewGame} disabled={newGameModal.selectedPlayerIds.length === 0} className="w-full shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl">Start Game Session{newGameModal.selectedPlayerIds.length > 0 ? ` (${newGameModal.selectedPlayerIds.length} players)` : ''}</button>
+              <button onClick={submitNewGame} disabled={newGameModal.selectedPlayerIds.length === 0} className="w-full min-h-[58px] shrink-0 bg-[#6366f1] hover:bg-[#818cf8] active:scale-[0.99] disabled:opacity-45 disabled:cursor-not-allowed text-white text-base font-extrabold py-4 px-4 rounded-xl shadow-lg shadow-indigo-950/40 ring-1 ring-white/20 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-indigo-300 mb-[max(0.5rem,env(safe-area-inset-bottom))]">Start Game Session{newGameModal.selectedPlayerIds.length > 0 ? ` (${newGameModal.selectedPlayerIds.length} players)` : ''}</button>
             </div>
           </div>
         )}
@@ -2411,6 +2429,28 @@ export default function App() {
   };
 
   const currentTab = (activeTab === 'session' && !isSessionActive) ? 'home' : activeTab;
+  const touchStartRef = React.useRef(null);
+  const backHandlerRef = React.useRef(null);
+  backHandlerRef.current = () => {
+    if (planEdit) setPlanEdit(null);
+    else if (paymentSheet) setPaymentSheet(null);
+    else if (confirmModal) setConfirmModal(null);
+    else if (newGameModal.isOpen) setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
+    else if (settingsOpen) setSettingsOpen(false);
+    else if (currentTab === 'details') setActiveTab(detailsBackTab || 'history');
+    else if (currentTab === 'playerStats') setActiveTab(statsBackTab || 'players');
+    else if (currentTab === 'ledger' || currentTab === 'archive') { setMoreOpen(true); setActiveTab('home'); }
+    else if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); }
+  };
+  useEffect(() => {
+    window.history.pushState({ stackSettler: true }, '');
+    const onPopState = () => {
+      if (backHandlerRef.current) backHandlerRef.current();
+      window.history.pushState({ stackSettler: true }, '');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   const tabItems = [
     { key: 'home', label: 'Home', Icon: Home },
@@ -2431,7 +2471,22 @@ export default function App() {
           <div className="text-sm font-medium text-slate-400">{pageTitles[currentTab]}</div>
         </div>
       </header>
-      <main className="max-w-xl mx-auto px-4 pt-4 pb-28 relative z-10">
+      <main
+        className="max-w-xl mx-auto px-4 pt-4 pb-28 relative z-10"
+        onTouchStart={(e) => { const t = e.touches && e.touches[0]; touchStartRef.current = t ? { x: t.clientX, y: t.clientY } : null; }}
+        onTouchEnd={(e) => {
+          const start = touchStartRef.current; const t = e.changedTouches && e.changedTouches[0]; touchStartRef.current = null;
+          if (!start || !t || start.x > 26 || t.clientX - start.x < 90 || Math.abs(t.clientY - start.y) > 70) return;
+          if (planEdit) setPlanEdit(null);
+          else if (paymentSheet) setPaymentSheet(null);
+          else if (confirmModal) setConfirmModal(null);
+          else if (newGameModal.isOpen) setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
+          else if (settingsOpen) setSettingsOpen(false);
+          else if (currentTab === 'details') setActiveTab(detailsBackTab || 'history');
+          else if (currentTab === 'playerStats') setActiveTab(statsBackTab || 'players');
+          else if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); }
+        }}
+      >
         {currentTab === 'home' && renderHome()}
         {currentTab === 'session' && renderActiveSession()}
         {currentTab === 'players' && renderPlayers()}
