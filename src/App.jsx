@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
 import { 
   Users, History, Plus, DollarSign, ArrowRight, Save, 
   CheckCircle2, AlertCircle, X, ChevronRight, Calculator,
@@ -60,6 +62,8 @@ const gamePayoutId = (tx, idx) => tx.id || `p${idx}`;
 
 // Works out which payments in each game are already covered by recorded payments (from the Ledger or the game)
 const computeGameSettlementStates = (games, settlements) => {
+  // Administrative balance write-offs must not count as real game payments.
+  const actualSettlements = settlements.filter(s => s.type !== 'balance-clear');
   const ordered = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
   const rem = {};
   ordered.forEach(g => {
@@ -83,7 +87,7 @@ const computeGameSettlementStates = (games, settlements) => {
       left -= take;
     });
   };
-  const sorted = [...settlements].sort((a, b) => ((a.gameId ? 0 : 1) - (b.gameId ? 0 : 1)) || (new Date(a.date) - new Date(b.date)));
+  const sorted = [...actualSettlements].sort((a, b) => ((a.gameId ? 0 : 1) - (b.gameId ? 0 : 1)) || (new Date(a.date) - new Date(b.date)));
   sorted.forEach(st => {
     const only = st.gameId && rem[st.gameId] ? st.gameId : null;
     clear(st.from, st.amount, 'debt', only, st.id);
@@ -97,10 +101,10 @@ const computeGameSettlementStates = (games, settlements) => {
       debtPool[name] = Math.max(0, r.debt0 - r.debt);
       creditPool[name] = Math.max(0, r.credit0 - r.credit);
     });
-    const taggedHere = new Set(settlements.filter(x => x.gameId === g.id).map(x => x.id));
+    const taggedHere = new Set(actualSettlements.filter(x => x.gameId === g.id && x.payoutId).map(x => x.id));
     out[g.id] = (g.payouts || []).map((tx, idx) => {
       const pid = gamePayoutId(tx, idx);
-      const tagged = settlements.some(s => s.gameId === g.id && s.payoutId === pid);
+      const tagged = actualSettlements.some(s => s.gameId === g.id && s.payoutId === pid);
       const a = tx.amount;
       const payer = debtPool[tx.from] || 0, recv = creditPool[tx.to] || 0;
       if (tagged) {
@@ -120,7 +124,7 @@ const computeGameSettlementStates = (games, settlements) => {
 
 
 // --- Greedy Settlement Algorithm ---
-const calculateSimplifiedPayouts = (originalPlayers) => {
+const calculateSimplifiedPayouts = (originalPlayers, roundToOverride = settleRound) => {
   const players = originalPlayers.map(p => ({ ...p }));
   
   let totalDiscount = 0;
@@ -128,7 +132,7 @@ const calculateSimplifiedPayouts = (originalPlayers) => {
   players.forEach(p => {
     if (p.net < -0.01) {
       const debt = Math.abs(p.net);
-      const favoredDebt = settleRound > 0 ? Math.floor(debt / settleRound) * settleRound : debt;
+      const favoredDebt = roundToOverride > 0 ? Math.floor(debt / roundToOverride) * roundToOverride : debt;
       const discount = debt - favoredDebt;
       
       p.net = -favoredDebt;
@@ -986,7 +990,7 @@ export default function App() {
     app: 'StackSettler', version: 1, exportedAt: new Date().toISOString(),
     games: gamesHistory, roster: roster, settlements: settlements,
     settings: { currency: activeCurrency, roundTo: settleRound, keepAwake: keepAwake }
-  }, null, 1);
+  });
   const buildCsv = () => {
     const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
     const lines = ['date,player,buy_in,cash_out,net,minutes'];
@@ -1006,7 +1010,13 @@ export default function App() {
   };
   const restoreBackup = (text) => {
     let data;
-    try { data = JSON.parse(text); } catch (e) { showToast('That is not valid backup text'); return; }
+    const normalized = String(text || '').replace(/^\\uFEFF/, '').trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');
+    try { data = JSON.parse(normalized); } catch (e) {
+      const match = String(e && e.message || '').match(/position (\\d+)/i);
+      const position = match ? Number(match[1]) : null;
+      showToast(`Backup is incomplete or invalid${position === null ? '' : ` near character ${position}`}. Upload the original .json backup file or copy the entire text again.`);
+      return;
+    }
     if (!data || data.app !== 'StackSettler' || !Array.isArray(data.games)) { showToast('This is not a StackSettler backup'); return; }
     setGamesHistory(data.games);
     try { localStorage.setItem('pokerTracker_games', JSON.stringify(data.games)); } catch (e) {}
@@ -1100,7 +1110,7 @@ export default function App() {
   const openSessionPlanEditor = () => setPlanEdit({ kind: 'session', rows: rowsFromPayouts(calculatedPayouts) });
   const setPlanRow = (idx, patch) => setPlanEdit(prev => {
     const nextRows = prev.rows.map((r, i) => i === idx ? { ...r, ...patch } : r);
-    if (!('from' in patch) && !('to' in patch)) return { ...prev, rows: nextRows };
+    if (!('from' in patch) && !('to' in patch) && !('amount' in patch)) return { ...prev, rows: nextRows };
     const anchor = nextRows[idx];
     const amount = round2(Number(anchor.amount) || 0);
     const balances = planContext(prev).nets.map(p => ({ name: p.name, net: Number(p.net) || 0 }));
@@ -1136,16 +1146,38 @@ export default function App() {
       const g = gamesHistory.find(x => x.id === planEdit.gameId);
       if (!g) { setPlanEdit(null); return; }
       updateGame({ ...g, payouts: rows });
-      const keep = settlements.filter(s => {
-        if (s.gameId !== g.id) return true;
+      // Keep historical payments when the plan is edited. Detach the old payout ID
+      // so the payment still affects balances and can cover matching rows in the new plan.
+      const keep = settlements.map(s => {
+        if (s.gameId !== g.id || !s.payoutId) return s;
         const r = rows.find(x => x.id === s.payoutId);
-        return r && r.from === s.from && r.to === s.to && Math.abs(r.amount - s.amount) < 0.005;
+        if (r && r.from === s.from && r.to === s.to && Math.abs(r.amount - s.amount) < 0.005) return s;
+        const { payoutId, ...historicalPayment } = s;
+        return historicalPayment;
       });
-      if (keep.length !== settlements.length) persistSettlements(keep);
+      if (keep.some((s, i) => s !== settlements[i])) persistSettlements(keep);
     }
     setPlanEdit(null);
     showToast('Plan updated');
   };
+  const clearRemainingLedgerBalances = () => {
+    const rows = calculateSimplifiedPayouts(masterLedger, 0).filter(tx => tx.amount > EPS);
+    if (!rows.length) { showToast('No remaining ledger balances to clear'); return; }
+    const total = round2(rows.reduce((sum, tx) => sum + tx.amount, 0));
+    setConfirmModal({
+      title: 'Clear remaining balances?',
+      message: `This writes off the remaining ${formatCurrency(total)} in the combined Ledger. It is recorded in the Archive as a balance clear, not as a real payment, and does not mark individual game payments as paid.`,
+      confirmLabel: 'Clear balances',
+      onConfirm: () => {
+        const date = new Date().toISOString();
+        const clears = rows.map(tx => ({ ...tx, id: generateId(), date, type: 'balance-clear' }));
+        persistSettlements([...clears, ...settlements]);
+        setLedgerPlan(null);
+        showToast('Remaining ledger balances cleared');
+      }
+    });
+  };
+
   const settleLedgerRow = (tx) => {
     confirmPayments([tx], () => {
       handleSettlePayment(tx.from, tx.to, tx.amount);
@@ -2065,6 +2097,9 @@ export default function App() {
         <button onClick={openLedgerPlanEditor} className="flex-1 h-11 bg-indigo-600 text-white font-bold rounded-xl flex items-center justify-center text-sm"><Pencil size={16} className="mr-1.5" /> Edit who pays who</button>
         <button onClick={() => doShare('StackSettler dues', buildSettlementText('StackSettler dues', planRows))} disabled={planRows.length === 0} className="h-11 px-4 bg-slate-800 border border-slate-700 text-slate-200 rounded-xl flex items-center text-sm font-semibold disabled:opacity-40"><Share2 size={16} className="mr-1.5" /> Share</button>
       </div>
+      {owing.length > 0 && (
+        <button onClick={clearRemainingLedgerBalances} className="w-full h-11 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm font-semibold">Clear remaining balances (not a payment)</button>
+      )}
 
       {owing.length > 0 && (
         <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
@@ -2133,7 +2168,7 @@ export default function App() {
                     <ArrowRight className="text-slate-500" size={14} />
                     <span className="font-semibold text-emerald-400">{tx.to}</span>
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">{formatDate(tx.date)}{sg ? ` · from game ${formatDate(sg.date).split(',')[0]}` : ''}</div>
+                  <div className="text-xs text-slate-500 mt-1">{tx.type === 'balance-clear' ? 'Balance cleared · not a real payment' : formatDate(tx.date)}{tx.type !== 'balance-clear' && sg ? ` · from game ${formatDate(sg.date).split(',')[0]}` : ''}</div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <div className="font-bold text-slate-200">{formatCurrency(tx.amount)}</div>
@@ -2432,24 +2467,54 @@ export default function App() {
   const touchStartRef = React.useRef(null);
   const backHandlerRef = React.useRef(null);
   backHandlerRef.current = () => {
-    if (planEdit) setPlanEdit(null);
-    else if (paymentSheet) setPaymentSheet(null);
-    else if (confirmModal) setConfirmModal(null);
-    else if (newGameModal.isOpen) setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
-    else if (settingsOpen) setSettingsOpen(false);
-    else if (currentTab === 'details') setActiveTab(detailsBackTab || 'history');
-    else if (currentTab === 'playerStats') setActiveTab(statsBackTab || 'players');
-    else if (currentTab === 'ledger' || currentTab === 'archive') { setMoreOpen(true); setActiveTab('home'); }
-    else if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); }
+    if (planEdit) { setPlanEdit(null); return true; }
+    if (paymentSheet) { setPaymentSheet(null); return true; }
+    if (confirmModal) { setConfirmModal(null); return true; }
+    if (newGameModal.isOpen) { setNewGameModal({ isOpen: false, selectedPlayerIds: [] }); return true; }
+    if (settingsOpen) { setSettingsOpen(false); return true; }
+    if (moreOpen) { setMoreOpen(false); return true; }
+    if (currentTab === 'details') { setActiveTab(detailsBackTab || 'history'); return true; }
+    if (currentTab === 'playerStats') { setActiveTab(statsBackTab || 'players'); return true; }
+    if (currentTab === 'ledger' || currentTab === 'archive') { setMoreOpen(true); setActiveTab('home'); return true; }
+    if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); return true; }
+    return false;
   };
   useEffect(() => {
     window.history.pushState({ stackSettler: true }, '');
     const onPopState = () => {
-      if (backHandlerRef.current) backHandlerRef.current();
-      window.history.pushState({ stackSettler: true }, '');
+      const handled = backHandlerRef.current ? backHandlerRef.current() : false;
+      if (handled) window.history.pushState({ stackSettler: true }, '');
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined;
+    const listenerPromise = CapacitorApp.addListener('backButton', () => {
+      const handled = backHandlerRef.current ? backHandlerRef.current() : false;
+      if (!handled) CapacitorApp.exitApp();
+    });
+    return () => { listenerPromise.then(listener => listener.remove()).catch(() => {}); };
+  }, []);
+  useEffect(() => {
+    const onTouchStart = (e) => {
+      const t = e.touches && e.touches.length === 1 ? e.touches[0] : null;
+      touchStartRef.current = t ? { x: t.clientX, y: t.clientY } : null;
+    };
+    const onTouchEnd = (e) => {
+      const start = touchStartRef.current;
+      const t = e.changedTouches && e.changedTouches[0];
+      touchStartRef.current = null;
+      if (!start || !t || start.x > 32 || t.clientX - start.x < 80 || Math.abs(t.clientY - start.y) > 70) return;
+      const handled = backHandlerRef.current ? backHandlerRef.current() : false;
+      if (handled && e.cancelable) e.preventDefault();
+    };
+    document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    document.addEventListener('touchend', onTouchEnd, { capture: true, passive: false });
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart, true);
+      document.removeEventListener('touchend', onTouchEnd, true);
+    };
   }, []);
 
   const tabItems = [
@@ -2471,22 +2536,7 @@ export default function App() {
           <div className="text-sm font-medium text-slate-400">{pageTitles[currentTab]}</div>
         </div>
       </header>
-      <main
-        className="max-w-xl mx-auto px-4 pt-4 pb-28 relative z-10"
-        onTouchStart={(e) => { const t = e.touches && e.touches[0]; touchStartRef.current = t ? { x: t.clientX, y: t.clientY } : null; }}
-        onTouchEnd={(e) => {
-          const start = touchStartRef.current; const t = e.changedTouches && e.changedTouches[0]; touchStartRef.current = null;
-          if (!start || !t || start.x > 26 || t.clientX - start.x < 90 || Math.abs(t.clientY - start.y) > 70) return;
-          if (planEdit) setPlanEdit(null);
-          else if (paymentSheet) setPaymentSheet(null);
-          else if (confirmModal) setConfirmModal(null);
-          else if (newGameModal.isOpen) setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
-          else if (settingsOpen) setSettingsOpen(false);
-          else if (currentTab === 'details') setActiveTab(detailsBackTab || 'history');
-          else if (currentTab === 'playerStats') setActiveTab(statsBackTab || 'players');
-          else if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); }
-        }}
-      >
+      <main className="max-w-xl mx-auto px-4 pt-4 pb-28 relative z-10">
         {currentTab === 'home' && renderHome()}
         {currentTab === 'session' && renderActiveSession()}
         {currentTab === 'players' && renderPlayers()}
