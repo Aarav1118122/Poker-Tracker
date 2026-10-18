@@ -123,6 +123,76 @@ const computeGameSettlementStates = (games, settlements) => {
 };
 
 
+
+const recoverTruncatedBackup = (source) => {
+  if (!/"app"\s*:\s*"StackSettler"/.test(source)) return null;
+  const gamesMatch = /"games"\s*:\s*\[/.exec(source);
+  if (!gamesMatch) return null;
+  const arrayStart = gamesMatch.index + gamesMatch[0].lastIndexOf('[') + 1;
+  const games = [];
+  let i = arrayStart;
+  while (i < source.length) {
+    while (i < source.length && /[\s,]/.test(source[i])) i++;
+    if (source[i] !== '{') break;
+    const start = i;
+    let depth = 0, inString = false, escaped = false, complete = false;
+    for (; i < source.length; i++) {
+      const ch = source[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{' || ch === '[') depth++;
+      else if (ch === '}' || ch === ']') {
+        depth--;
+        if (depth === 0) { i++; complete = true; break; }
+      }
+    }
+    const fragment = source.slice(start, i);
+    if (complete) {
+      try { games.push(JSON.parse(fragment)); } catch (e) {}
+    } else {
+      // Keep only complete top-level fields from the final incomplete game object.
+      const fields = {};
+      let segmentStart = 1, nested = 0, quoted = false, slash = false;
+      const addField = (segment) => {
+        try { Object.assign(fields, JSON.parse('{' + segment + '}')); } catch (e) {}
+      };
+      for (let j = 1; j < fragment.length; j++) {
+        const ch = fragment[j];
+        if (quoted) {
+          if (slash) slash = false;
+          else if (ch === '\\') slash = true;
+          else if (ch === '"') quoted = false;
+          continue;
+        }
+        if (ch === '"') { quoted = true; continue; }
+        if (ch === '{' || ch === '[') nested++;
+        else if (ch === '}' || ch === ']') nested--;
+        else if (ch === ',' && nested === 0) {
+          addField(fragment.slice(segmentStart, j));
+          segmentStart = j + 1;
+        }
+      }
+      if (Array.isArray(fields.players) && Array.isArray(fields.payouts) && fields.id && fields.date) {
+        fields.logs = Array.isArray(fields.logs) ? fields.logs : [];
+        fields.recoveredPartial = true;
+        games.push(fields);
+      }
+      break;
+    }
+  }
+  if (!games.length) return null;
+  const rosterByName = new Map();
+  games.forEach(g => (g.players || []).forEach(p => {
+    if (p.name && !rosterByName.has(p.name)) rosterByName.set(p.name, { id: p.id || generateId(), name: p.name });
+  }));
+  return { app: 'StackSettler', version: 1, games, roster: Array.from(rosterByName.values()), settlements: [], partial: true };
+};
+
 // --- Greedy Settlement Algorithm ---
 const calculateSimplifiedPayouts = (originalPlayers, roundToOverride = settleRound) => {
   const players = originalPlayers.map(p => ({ ...p }));
@@ -1012,6 +1082,17 @@ export default function App() {
     let data;
     const normalized = String(text || '').replace(/^\uFEFF/, '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     try { data = JSON.parse(normalized); } catch (e) {
+      const recovered = recoverTruncatedBackup(normalized);
+      if (recovered) {
+        const partialGameCount = recovered.games.filter(g => g.recoveredPartial).length;
+        setConfirmModal({
+          title: 'Backup text is truncated',
+          message: `I recovered ${recovered.games.length} game record(s)${partialGameCount ? `, including ${partialGameCount} game with incomplete logs` : ''}. The copied text does not contain the roster settings or settlement archive, so those cannot be recovered from this text. Continuing replaces current games, rebuilds the player list from the recovered games, and clears the settlement archive. Use the original .json file if you have it.`,
+          confirmLabel: 'Restore recovered games',
+          onConfirm: () => restoreBackup(JSON.stringify(recovered))
+        });
+        return;
+      }
       const match = String(e && e.message || '').match(/position (\d+)/i);
       const position = match ? Number(match[1]) : null;
       showToast(`Backup is incomplete or invalid${position === null ? '' : ` near character ${position}`}. Upload the original .json backup file or copy the entire text again.`);
