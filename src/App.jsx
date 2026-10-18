@@ -2428,26 +2428,27 @@ export default function App() {
 
   const currentTab = (activeTab === 'session' && !isSessionActive) ? 'home' : activeTab;
   const touchStartRef = React.useRef(null);
+  const backHandlerRef = React.useRef(null);
+  backHandlerRef.current = () => {
+    if (planEdit) setPlanEdit(null);
+    else if (paymentSheet) setPaymentSheet(null);
+    else if (confirmModal) setConfirmModal(null);
+    else if (newGameModal.isOpen) setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
+    else if (settingsOpen) setSettingsOpen(false);
+    else if (currentTab === 'details') setActiveTab(detailsBackTab || 'history');
+    else if (currentTab === 'playerStats') setActiveTab(statsBackTab || 'players');
+    else if (currentTab === 'ledger' || currentTab === 'archive') { setMoreOpen(true); setActiveTab('home'); }
+    else if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); }
+  };
   useEffect(() => {
-    const handleBack = () => {
-      if (planEdit) setPlanEdit(null);
-      else if (paymentSheet) setPaymentSheet(null);
-      else if (confirmModal) setConfirmModal(null);
-      else if (newGameModal.isOpen) setNewGameModal({ isOpen: false, selectedPlayerIds: [] });
-      else if (settingsOpen) setSettingsOpen(false);
-      else if (currentTab === 'details') setActiveTab(detailsBackTab || 'history');
-      else if (currentTab === 'playerStats') setActiveTab(statsBackTab || 'players');
-      else if (currentTab === 'ledger' || currentTab === 'archive') { setMoreOpen(true); setActiveTab('home'); }
-      else if (currentTab !== 'home') { setMoreOpen(false); setActiveTab('home'); }
-    };
+    window.history.pushState({ stackSettler: true }, '');
     const onPopState = () => {
-      handleBack();
+      if (backHandlerRef.current) backHandlerRef.current();
       window.history.pushState({ stackSettler: true }, '');
     };
-    window.history.pushState({ stackSettler: true }, '');
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [planEdit, paymentSheet, confirmModal, newGameModal.isOpen, settingsOpen, currentTab, detailsBackTab, statsBackTab]);
+  }, []);
 
   const tabItems = [
     { key: 'home', label: 'Home', Icon: Home },
