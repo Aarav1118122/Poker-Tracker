@@ -591,7 +591,7 @@ export default function App() {
 
   const balanceKey = useMemo(() => masterLedger.map(p => `${p.name}:${round2(p.net)}`).sort().join('|'), [masterLedger]);
   const customLedgerActive = !!(ledgerPlan && ledgerPlan.key === balanceKey);
-  const ledgerSettled = (customLedgerActive ? ledgerPlan.rows : masterPayouts).length === 0;
+  const ledgerSettled = masterLedger.every(p => Math.abs(p.net) <= EPS) && (customLedgerActive ? ledgerPlan.rows : masterPayouts).length === 0;
   const gameStates = useMemo(() => computeGameSettlementStates(gamesHistory, settlements), [gamesHistory, settlements]);
 
   // --- Player stats & rankings ---
@@ -1089,7 +1089,7 @@ export default function App() {
         const partialGameCount = recovered.recoveredPartialGameCount || 0;
         setConfirmModal({
           title: 'Backup text is truncated',
-          message: `I recovered ${recovered.games.length} game record(s)${partialGameCount ? `, including ${partialGameCount} game with incomplete logs` : ''}. The copied text does not contain the roster settings or settlement archive, so those cannot be recovered from this text. Continuing replaces current games, rebuilds the player list from the recovered games, and clears the settlement archive. Use the original .json file if you have it.`,
+          message: `I recovered ${recovered.games.length} game record(s)${partialGameCount ? `, including ${partialGameCount} game with incomplete logs` : ''}. The copied text does not contain the roster, settlement archive, or app settings. Continuing replaces current games, rebuilds the player list from the recovered games, clears the settlement archive, and leaves your current app settings unchanged. Use the original .json file if you have it.`,
           confirmLabel: 'Restore recovered games',
           onConfirm: () => restoreBackup(JSON.stringify(recovered))
         });
