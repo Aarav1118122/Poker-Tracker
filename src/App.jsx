@@ -130,6 +130,7 @@ const recoverTruncatedBackup = (source) => {
   if (!gamesMatch) return null;
   const arrayStart = gamesMatch.index + gamesMatch[0].lastIndexOf('[') + 1;
   const games = [];
+  let partialGameCount = 0;
   let i = arrayStart;
   while (i < source.length) {
     while (i < source.length && /[\s,]/.test(source[i])) i++;
@@ -177,9 +178,10 @@ const recoverTruncatedBackup = (source) => {
           segmentStart = j + 1;
         }
       }
-      if (Array.isArray(fields.players) && Array.isArray(fields.payouts) && fields.id && fields.date) {
+      if (Array.isArray(fields.players) && Array.isArray(fields.payouts) && fields.date) {
+        fields.id = fields.id || generateId();
         fields.logs = Array.isArray(fields.logs) ? fields.logs : [];
-        fields.recoveredPartial = true;
+        partialGameCount++;
         games.push(fields);
       }
       break;
@@ -190,7 +192,7 @@ const recoverTruncatedBackup = (source) => {
   games.forEach(g => (g.players || []).forEach(p => {
     if (p.name && !rosterByName.has(p.name)) rosterByName.set(p.name, { id: p.id || generateId(), name: p.name });
   }));
-  return { app: 'StackSettler', version: 1, games, roster: Array.from(rosterByName.values()), settlements: [], partial: true };
+  return { app: 'StackSettler', version: 1, games, roster: Array.from(rosterByName.values()), settlements: [], partial: true, recoveredPartialGameCount: partialGameCount };
 };
 
 // --- Greedy Settlement Algorithm ---
@@ -1084,7 +1086,7 @@ export default function App() {
     try { data = JSON.parse(normalized); } catch (e) {
       const recovered = recoverTruncatedBackup(normalized);
       if (recovered) {
-        const partialGameCount = recovered.games.filter(g => g.recoveredPartial).length;
+        const partialGameCount = recovered.recoveredPartialGameCount || 0;
         setConfirmModal({
           title: 'Backup text is truncated',
           message: `I recovered ${recovered.games.length} game record(s)${partialGameCount ? `, including ${partialGameCount} game with incomplete logs` : ''}. The copied text does not contain the roster settings or settlement archive, so those cannot be recovered from this text. Continuing replaces current games, rebuilds the player list from the recovered games, and clears the settlement archive. Use the original .json file if you have it.`,
