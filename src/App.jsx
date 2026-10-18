@@ -1110,8 +1110,10 @@ export default function App() {
     if (!payer || !receiver) return { ...prev, rows: nextRows };
     payer.net = round2(payer.net + amount);
     receiver.net = round2(receiver.net - amount);
-    const remainder = calculateSimplifiedPayouts(balances)
-      .map(tx => ({ id: generateId(), from: tx.from, to: tx.to, amount: String(tx.amount) }));
+    const remainder = calculateSimplifiedPayouts(balances).map(tx => {
+      const existing = prev.rows.find((r, i) => i !== idx && r.from === tx.from && r.to === tx.to && Math.abs((Number(r.amount) || 0) - tx.amount) < 0.005);
+      return { id: existing ? existing.id : generateId(), from: tx.from, to: tx.to, amount: String(tx.amount) };
+    });
     return { ...prev, rows: [{ ...anchor, amount: String(amount) }, ...remainder] };
   });
   const addPlanRow = () => setPlanEdit(prev => {
